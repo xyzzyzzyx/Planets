@@ -36,4 +36,4 @@ Current universe state sent to client on page load.
 
 ## Claude SIM
 
-[GitHub Pages](https://william-stanley-welling.github.io/Planets)
+[GitHub Pages](https://xyzzyzzyx.github.io/Planets)
