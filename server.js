@@ -843,6 +843,7 @@ async function main() {
       "Stephen_Hawking",
       "Murray_Gell_Mann",
       "Roger_Penrose",
+      "Chaos_theory"
     ];
 
     async function downloadImage(url, filepath) {
