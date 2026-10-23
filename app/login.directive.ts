@@ -1,32 +1,18 @@
-﻿import { Directive, HostListener, OnInit } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { Directive, inject } from '@angular/core';
 import { LoginService } from './login.service';
 
+/** Toggles the login overlay when the host element is clicked. */
 @Directive({
   selector: '[loginClick]',
-  standalone: true
+  host: {
+    '(click)': 'onClick()',
+    '[attr.aria-pressed]': 'loginService.showing()',
+  },
 })
-export class LoginDirective implements OnInit {
-  private open = false;
-  private sub: Subscription;
+export class LoginDirective {
+  protected readonly loginService = inject(LoginService);
 
-  constructor(private loginService: LoginService) {
-
-  }
-
-  ngOnInit(): void {
-    this.sub = this.loginService.emitter.subscribe((showing: boolean) => {
-      this.open = showing;
-    });
-  }
-
-  @HostListener('click')
-  onMouseClick(): void {
-    this.open = !this.open;
-    this.loginService.setShowing(this.open);
-  }
-
-  ngOnDestroy(): void {
-    this.sub.unsubscribe();
+  onClick(): void {
+    this.loginService.toggle();
   }
 }

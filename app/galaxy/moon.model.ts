@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { MoonConfig, OrbitingBody } from './celestial.model';
 
-export { MoonConfig };
+export type { MoonConfig } from './celestial.model';
 
 export enum LunarPhase {
   NEW_MOON = 'New Moon',
@@ -14,6 +14,7 @@ export enum LunarPhase {
   WANING_CRESCENT = 'Waning Crescent',
 }
 
+/** Classify a Sun–Moon elongation angle (radians) into one of the eight named phases. */
 export function lunarPhaseFromAngle(phaseAngleRad: number): LunarPhase {
   const a = ((phaseAngleRad % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
   const deg = (a * 180) / Math.PI;
@@ -27,22 +28,30 @@ export function lunarPhaseFromAngle(phaseAngleRad: number): LunarPhase {
   return LunarPhase.WANING_CRESCENT;
 }
 
+/** A moon orbiting a planet (semi-major axis in scene "moon units", see OrbitingBody.getSemiMajorAxis). */
 export class Moon extends OrbitingBody {
+  declare readonly config: MoonConfig;
   readonly resource?: string;
 
   constructor(config: MoonConfig) {
     super(config);
     this.resource = config.resource;
-    if (!config.au && !config.relativeAu) {
-      // console.warn(`Moon "${config.name}" has no au or relativeAu — default radius used.`);
-    }
   }
 
+  /**
+   * Phase as seen from the parent planet: the angle between the directions
+   * planet→star and planet→moon (0 = new moon, π = full moon).
+   */
   getLunarPhase(starWorldPosition: THREE.Vector3 = new THREE.Vector3()): LunarPhase {
-    const moonWorld = new THREE.Vector3();
-    this.group.getWorldPosition(moonWorld);
-    const toStar = starWorldPosition.clone().sub(moonWorld).normalize();
-    const phaseAngle = Math.atan2(toStar.z, toStar.x);
-    return lunarPhaseFromAngle(phaseAngle);
+    const moonWorld = this.getWorldPosition();
+    const planetWorld = new THREE.Vector3();
+    (this.group.parent ?? this.group).getWorldPosition(planetWorld);
+    const toStar = starWorldPosition.clone().sub(planetWorld);
+    const toMoon = moonWorld.sub(planetWorld);
+    toStar.y = 0;
+    toMoon.y = 0;
+    if (toStar.lengthSq() === 0 || toMoon.lengthSq() === 0) return LunarPhase.NEW_MOON;
+    const angle = Math.atan2(toStar.x * toMoon.z - toStar.z * toMoon.x, toStar.dot(toMoon));
+    return lunarPhaseFromAngle(angle);
   }
 }

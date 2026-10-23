@@ -3,8 +3,6 @@
     "target": "https://localhost:3000",
     "secure": false,
     "changeOrigin": true,
-    "ws": false,
-    "logLevel": "debug",
     "proxyTimeout": 0,
     "timeout": 0,
     "headers": {

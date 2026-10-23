@@ -1,39 +1,71 @@
-import { Inject, Injectable } from '@angular/core';
-import { APP_CONFIG } from 'app/app.config';
+import { DestroyRef, Injectable, inject, signal } from '@angular/core';
 import { Observable, ReplaySubject, Subject } from 'rxjs';
+import { APP_CONFIG } from '../app.config';
+
+/** Events the backend emits on the SSE stream. */
+export type SseEventName = 'planets' | 'update';
+
+/** Factory seam so tests can substitute a fake EventSource. */
+export const createEventSource = (url: string): EventSource => new EventSource(url);
 
 @Injectable({ providedIn: 'root' })
 export class SseService {
+  private readonly config = inject(APP_CONFIG);
   private eventSource: EventSource | null = null;
-  private subjects = new Map<string, Subject<any>>();
+  private readonly subjects = new Map<SseEventName, Subject<unknown>>();
 
-  constructor(@Inject(APP_CONFIG) private config: any) {
-    this.connect();
+  /** Factory used to open the stream; overridable in tests. */
+  sourceFactory: (url: string) => EventSource = createEventSource;
+
+  readonly connected = signal(false);
+
+  constructor() {
+    inject(DestroyRef).onDestroy(() => this.close());
   }
 
-  on(eventName: string): Observable<any> {
-    return this.getSubject(eventName).asObservable();
+  /** Subscribe to an event; connects lazily. `planets` replays the latest snapshot to late subscribers. */
+  on<T = unknown>(eventName: SseEventName): Observable<T> {
+    const subject = this.getSubject(eventName);
+    this.connect();
+    return subject.asObservable() as Observable<T>;
   }
 
   private connect(): void {
     if (this.eventSource) return;
-    this.eventSource = new EventSource(this.config.sseUrl);
-    this.eventSource.onopen = () => console.log('[SSE] Connected.');
-    this.eventSource.onerror = (err) => console.error('[SSE] Error:', err);
-
-    for (const type of ['init', 'update', 'planets']) {
-      this.eventSource.addEventListener(type, (e: MessageEvent) => {
-        try { this.getSubject(type).next(JSON.parse(e.data)); }
-        catch { this.getSubject(type).next(e.data); }
+    const source = this.sourceFactory(this.config.sseUrl);
+    this.eventSource = source;
+    source.onopen = () => this.connected.set(true);
+    source.onerror = () => {
+      this.connected.set(false);
+      // The browser retries automatically unless the stream was closed for good.
+      if (source.readyState === EventSource.CLOSED) {
+        for (const s of this.subjects.values()) s.error(new Error('SSE connection closed'));
+      }
+    };
+    for (const name of ['planets', 'update'] as const) {
+      source.addEventListener(name, (e: Event) => {
+        const data = (e as MessageEvent<string>).data;
+        let value: unknown = data;
+        try { value = JSON.parse(data); } catch { /* deliver raw text */ }
+        this.getSubject(name).next(value);
       });
     }
   }
 
-  private getSubject(name: string): Subject<any> {
-    if (!this.subjects.has(name)) {
-      const isReplay = ['init', 'planets'].includes(name);
-      this.subjects.set(name, isReplay ? new ReplaySubject<any>(1) : new Subject<any>());
+  private getSubject(name: SseEventName): Subject<unknown> {
+    let subject = this.subjects.get(name);
+    if (!subject) {
+      subject = name === 'planets' ? new ReplaySubject<unknown>(1) : new Subject<unknown>();
+      this.subjects.set(name, subject);
     }
-    return this.subjects.get(name)!;
+    return subject;
+  }
+
+  close(): void {
+    this.eventSource?.close();
+    this.eventSource = null;
+    this.connected.set(false);
+    for (const s of this.subjects.values()) s.complete();
+    this.subjects.clear();
   }
 }

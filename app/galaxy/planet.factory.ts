@@ -1,72 +1,51 @@
-﻿import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import * as THREE from 'three';
-import { AssetTextureService } from '../webgl/asset-texture.service';
+import { AssetTextureService, hasImage } from '../webgl/asset-texture.service';
 import { CelestialFactory } from './celestial.factory';
-import { Planet, PlanetConfig, SIMULATION_CONSTANTS } from './planet.model';
+import { PlanetConfig, SIMULATION_CONSTANTS, visualRadiusFor } from './celestial.model';
+import { Planet } from './planet.model';
 
+export const PLANET_MIN_VISUAL_RADIUS = 1;
+
+/** Builds planet meshes: textured Phong sphere, optional cloud shell, highlight, graticule and field. */
 @Injectable({ providedIn: 'root' })
 export class PlanetFactory extends CelestialFactory<PlanetConfig, Planet> {
-  constructor(private textureService: AssetTextureService) {
-    super();
-  }
+  private readonly textureService = inject(AssetTextureService);
 
   async build(config: PlanetConfig): Promise<Planet> {
-    const texturePaths = [
-      config.map || '',
-      config.bumpMap || '',
-      config.specMap || '',
-      config.cloudMap || '',
-      config.alphaMap || '',
-    ];
-    const textures = await this.textureService.loadMultipleTextures(texturePaths);
+    const [map, bump, spec, cloud, alpha] = await this.textureService.loadMultipleTextures([
+      config.map, config.bumpMap, config.specMap, config.cloudMap, config.alphaMap,
+    ]);
     const planet = new Planet(config);
-    const baseColor = config.color ? new THREE.Color(config.color) : new THREE.Color(0xaaaaaa);
+    const baseColor = new THREE.Color(config.color || 0xaaaaaa);
 
     const material = new THREE.MeshPhongMaterial({
       color: baseColor,
       bumpScale: 0.25,
       specular: new THREE.Color(0x555555),
       shininess: 10,
-      emissive: textures[0]?.image ? new THREE.Color(0x000000) : baseColor.clone().multiplyScalar(0.3),
+      emissive: hasImage(map) ? new THREE.Color(0x000000) : baseColor.clone().multiplyScalar(0.3),
       emissiveIntensity: 0.8,
-      ...(textures[0]?.image && { map: textures[0] }),
-      ...(textures[1]?.image && { bumpMap: textures[1] }),
-      ...(textures[2]?.image && { specularMap: textures[2] }),
+      map: hasImage(map) ? map : null,
+      bumpMap: hasImage(bump) ? bump : null,
+      specularMap: hasImage(spec) ? spec : null,
     });
 
-    let visualRadius = (config.diameter || 1) * SIMULATION_CONSTANTS.VISUAL_SCALE / 2;
-
-    if ((config.diameter || 1) < 1) {
-      visualRadius = 1;
-    }
-
-    planet.mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(visualRadius, config.widthSegments || 64, config.heightSegments || 64),
-      material
-    );
+    const visualRadius = visualRadiusFor(config.diameter, PLANET_MIN_VISUAL_RADIUS);
+    planet.mesh = new THREE.Mesh(new THREE.SphereGeometry(visualRadius, config.widthSegments || 64, config.heightSegments || 64), material);
     planet.mesh.castShadow = true;
     planet.mesh.receiveShadow = true;
     planet.mesh.name = config.name || 'Planet';
 
-    planet.highlight = new THREE.Mesh(
-      new THREE.SphereGeometry(visualRadius * 1.22, 64, 64),
-      new THREE.MeshBasicMaterial({
-        color: 0x44aaff,
-        transparent: true,
-        opacity: 0.65,
-        side: THREE.BackSide,
-        depthWrite: false,
-      }),
-    );
-    planet.highlight.visible = false;
+    planet.highlight = this.createHighlight(visualRadius * 1.22, 0x44aaff, 0.65, 48);
 
-    if (config.cloudMap && textures[3]?.image) {
-      const visualCloudRadius = ((config.diameter || 1) + (config.atmosphere || 0)) * SIMULATION_CONSTANTS.VISUAL_SCALE / 2;
+    if (config.cloudMap && hasImage(cloud)) {
+      const cloudRadius = visualRadius + ((config.atmosphere || 0) * SIMULATION_CONSTANTS.VISUAL_SCALE) / 2 + visualRadius * 0.01;
       planet.clouds = new THREE.Mesh(
-        new THREE.SphereGeometry(visualCloudRadius, 64, 64),
+        new THREE.SphereGeometry(cloudRadius, 64, 64),
         new THREE.MeshPhongMaterial({
-          map: textures[3],
-          alphaMap: textures[4]?.image ? textures[4] : undefined,
+          map: cloud,
+          alphaMap: hasImage(alpha) ? alpha : null,
           side: THREE.DoubleSide,
           opacity: 0.85,
           transparent: true,
@@ -77,21 +56,13 @@ export class PlanetFactory extends CelestialFactory<PlanetConfig, Planet> {
     }
 
     planet.applyInitialTilt();
+    planet.orbitalGroup.add(planet.mesh, planet.highlight);
+    if (planet.clouds) planet.orbitalGroup.add(planet.clouds);
+    planet.mass = (config.mass ?? 1) * 10 ** (config.pow || 0);
 
-    planet.orbitalGroup.add(planet.mesh);
-    planet.orbitalGroup.add(planet.highlight);
-    if (planet.clouds) {
-      planet.orbitalGroup.add(planet.clouds);
-    }
-    planet.mass = config.mass * Math.pow(10, config.pow || 0);
-
-    const latLong = this.createLatLongLines(visualRadius);
-    planet.mesh.add(latLong);
-    planet.latLongGroup = latLong;
-
-    if ((config as any).magneticField) {
-
-    }
+    planet.latLongGroup = this.createLatLongLines(visualRadius);
+    planet.mesh.add(planet.latLongGroup);
+    this.createMagneticField(planet, planet.orbitalGroup);
 
     return planet;
   }

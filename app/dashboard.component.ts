@@ -1,1115 +1,407 @@
-﻿import { CommonModule } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
+  DestroyRef,
   ElementRef,
-  HostListener,
-  NgZone,
-  OnDestroy,
-  ViewChild,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+  viewChild,
+  viewChildren,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import { BehaviorSubject, Observable, Subscription } from 'rxjs';
-import { SIMULATION_CONSTANTS } from './galaxy/celestial.model';
-import { CameraView, NavigationMode, WebGl } from './webgl/webgl.service';
+import { CelestialBody, SIMULATION_CONSTANTS } from './galaxy/celestial.model';
+import { LayoutService } from './layout.service';
+import { parseDateTimeLocalValue, parseFlexibleDate, toDateTimeLocalValue } from './utils/dates';
+import {
+  CAM_SPEED_DEFAULT, CAM_SPEED_MAX, CAM_SPEED_MIN, SIM_SPEED_MAX, SIM_SPEED_MIN,
+  formatSpeed, logSliderToValue, snapSimSpeed, valueToLogSlider,
+} from './utils/speed';
+import { NavigationMode, WebGl } from './webgl/webgl.service';
+
+export interface Milestone { name: string; dateMs: number; desc: string; }
+
+/** Minimap scale: fits ~30.5 AU into 45% of the canvas width. */
+export const MINIMAP_SIZE = 200;
+export const MINIMAP_OUTER_AU = 30.5;
+export const MINIMAP_SCALE = (MINIMAP_SIZE * 0.45) / (MINIMAP_OUTER_AU * SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU);
+
+/** Convert a minimap pixel to ecliptic world coordinates (x, z). */
+export function minimapToWorld(px: number, py: number): { x: number; z: number } {
+  const c = MINIMAP_SIZE / 2;
+  return { x: (px - c) / MINIMAP_SCALE, z: -(py - c) / MINIMAP_SCALE };
+}
+
+/** Convert ecliptic world coordinates (x, z) to a minimap pixel. */
+export function worldToMinimap(x: number, z: number): { x: number; y: number } {
+  const c = MINIMAP_SIZE / 2;
+  return { x: c + x * MINIMAP_SCALE, y: c - z * MINIMAP_SCALE };
+}
+
+const HUD_SELECTOR = '.planet-panel, .sliders-panel, .minimap-wrap, .orbit-controls, .info-panel, .nav-mode-bar, .nav-panel, .date-panel, .help-panel, .selection-bar';
+const HUD_REFRESH_MS = 80;
 
 @Component({
   selector: 'dashboard',
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  styles: [`
-    /* ── base ──────────────────────────────────────────────────────────────── */
-    #content { position: relative; width: 100%; height: 100vh; overflow: hidden; }
-
-    .hud-hint {
-      position: absolute; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,0,0.7); color: #ccc;
-      padding: 0.5rem 1.2rem; border-radius: 6px;
-      font-size: 0.85rem; pointer-events: none; z-index: 100; white-space: nowrap;
-    }
-
-    .info-panel {
-      position: absolute; background: rgba(0,0,0,0.70);
-      backdrop-filter: blur(4px); border-radius: 8px;
-      padding: 8px 12px; font-family: monospace; font-size: 0.75rem;
-      color: #ccddff; border: 1px solid rgba(255,255,255,0.2);
-      z-index: 200; pointer-events: none;
-    }
-    .camera-info { bottom: 142px; right: 20px; }
-    .date-info   { bottom: 20px; right: 20px; text-align: right; }
-
-    /* ── selection bar ──────────────────────────────────────────────────────── */
-    .selection-bar {
-      position: absolute; top: 106px; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,20,0.85); border: 1px solid rgba(80,140,255,0.5);
-      border-radius: 6px; padding: 4px 14px; z-index: 210;
-      color: #99ccff; font-family: monospace; font-size: 0.75rem;
-      pointer-events: none;
-      max-width: 50%;
-    }
-
-    /* ── navigation mode bar ────────────────────────────────────────────────── */
-    .nav-mode-bar {
-      position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
-      display: flex; gap: 0; z-index: 200; pointer-events: auto;
-      background: rgba(0,0,0,0.75); border: 1px solid rgba(100,140,255,0.35);
-      border-radius: 8px; overflow: hidden;
-    }
-    .nav-btn {
-      background: transparent; border: none; border-right: 1px solid rgba(100,140,255,0.2);
-      color: rgba(180,200,255,0.6); padding: 6px 16px;
-      font-size: 0.72rem; cursor: pointer; letter-spacing: 0.04em;
-      transition: background 0.15s, color 0.15s;
-      display: flex; align-items: center; gap: 6px;
-    }
-    .nav-btn:last-child { border-right: none; }
-    .nav-btn:hover { background: rgba(80,120,255,0.15); color: #ccddff; }
-    .nav-btn.active {
-      background: rgba(60,110,255,0.30); color: #ffffff;
-      box-shadow: inset 0 -2px 0 #6699ff;
-    }
-    .nav-btn .mode-icon { font-size: 1rem; }
-
-    /* ── sliders ────────────────────────────────────────────────────────────── */
-    .sliders-panel {
-      position: absolute; bottom: 260px; left: 20px;
-      background: rgba(0,0,0,0.7); border-radius: 12px; padding: 12px;
-      backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.2);
-      z-index: 200; pointer-events: auto; display: flex; gap: 20px;
-    }
-    .slider-container { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-    .slider-label     { font-size: 0.7rem; color: #ccddff; text-transform: uppercase; }
-    input[type="range"].vertical {
-      writing-mode: bt-lr; -webkit-appearance: slider-vertical;
-      width: 20px; height: 150px; background: #334;
-    }
-    .speed-value { font-size: 0.7rem; color: #ffaa66; }
-
-    /* ── orbit controls ─────────────────────────────────────────────────────── */
-    .orbit-controls {
-      position: absolute; top: 20px; left: 20px;
-      display: flex; align-items: center; gap: 6px; z-index: 200; pointer-events: auto;
-    }
-    .orbit-controls button {
-      background: rgba(0,0,0,0.7); border: 1px solid #6699ff;
-      color: #ccddff; border-radius: 4px; padding: 4px 10px;
-      cursor: pointer; font-size: 0.72rem;
-      transition: background 0.15s, border-color 0.15s;
-    }
-    .orbit-controls button:hover { background: rgba(60,100,255,0.2); }
-    .orbit-controls button.active { background: rgba(60,110,255,0.28); border-color: #88aaff; color: #fff; }
-    .status-badge {
-      display: inline-block; margin-left: 5px; padding: 1px 5px;
-      border-radius: 3px; font-size: 0.6rem; font-weight: 700;
-      background: rgba(80,80,80,0.5); color: #aaa; vertical-align: middle;
-      transition: background 0.2s, color 0.2s;
-    }
-    .status-badge.on { background: rgba(50,200,130,0.35); color: #44ffcc; }
-
-    /* ── planet panel ───────────────────────────────────────────────────────── */
-    .planet-panel {
-      position: absolute; top: 60px; right: 20px;
-      width: 220px; max-height: 50vh;
-      background: rgba(0,0,0,0.82); border: 1px solid rgba(255,255,255,0.22);
-      border-radius: 10px; overflow-y: auto; padding: 10px 8px; z-index: 200;
-    }
-    .planet-label          { color: rgba(255,255,255,0.45); font-size: 0.65rem; padding: 0 6px 4px; text-transform: uppercase; }
-    .planet-multiselect-hint { color: rgba(255,255,255,0.28); font-size: 0.6rem; padding: 0 6px 6px; }
-    .planet-card {
-      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15);
-      border-left: 3px solid transparent; border-radius: 6px;
-      margin-bottom: 6px; padding: 6px 8px; cursor: pointer;
-      transition: all 0.18s ease; display: flex; align-items: center; justify-content: space-between;
-    }
-    .planet-card:hover    { background: rgba(255,255,255,0.14); transform: translateX(4px); }
-    .planet-card.selected { background: rgba(100,160,255,0.18); border-color: rgba(100,160,255,0.6); }
-    .planet-card.waypoint { border-color: rgba(0,255,200,0.5); background: rgba(0,255,200,0.06); }
-    .planet-name { color: #e8eeff; font-size: 0.9rem; font-weight: 600; }
-    .planet-meta { color: rgba(255,255,255,0.4); font-size: 0.7rem; margin-top: 2px; }
-    .indicator-canvas { width: 24px; height: 24px; margin-left: 8px; flex-shrink: 0; }
-
-    /* ── navigation panel ───────────────────────────────────────────────────── */
-    .nav-panel {
-      position: absolute; top: 60px; right: 250px; width: 240px;
-      background: rgba(0,5,20,0.88);
-      border: 1px solid rgba(0,255,200,0.30);
-      border-radius: 10px; padding: 12px 14px; z-index: 200; pointer-events: auto;
-      font-family: monospace; font-size: 0.72rem; color: #99ffee;
-    }
-    .nav-panel-title {
-      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
-      color: rgba(0,255,200,0.7); margin-bottom: 8px;
-      display: flex; justify-content: space-between; align-items: center;
-    }
-    .nav-panel-hint { font-size: 0.6rem; color: rgba(0,200,160,0.5); margin-bottom: 8px; }
-
-    .waypoint-list { max-height: 130px; overflow-y: auto; margin-bottom: 8px; }
-    .waypoint-item {
-      display: flex; align-items: center; gap: 5px;
-      padding: 3px 0; border-bottom: 1px solid rgba(0,200,160,0.1);
-      font-size: 0.65rem; color: rgba(180,255,240,0.85);
-    }
-    .waypoint-item:last-child { border-bottom: none; }
-    .waypoint-num { color: rgba(0,200,160,0.6); min-width: 14px; }
-    .waypoint-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .waypoint-dur {
-      background: rgba(0,0,0,0.4); border: 1px solid rgba(0,200,160,0.3);
-      color: #99ffee; width: 38px; font-size: 0.6rem; border-radius: 3px;
-      padding: 1px 3px; text-align: center;
-    }
-    .wp-remove {
-      background: none; border: none; color: rgba(255,80,80,0.6);
-      cursor: pointer; font-size: 0.7rem; padding: 0 2px; line-height: 1;
-    }
-    .wp-remove:hover { color: #ff5555; }
-    .wp-empty { color: rgba(0,200,160,0.35); font-size: 0.62rem; text-align: center; padding: 6px 0; }
-
-    .nav-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
-    .nav-btn-sm {
-      flex: 1; background: rgba(0,255,200,0.10);
-      border: 1px solid rgba(0,255,200,0.30);
-      color: #66ffdd; border-radius: 5px;
-      padding: 4px 6px; font-size: 0.62rem; cursor: pointer;
-      transition: background 0.15s;
-      display: flex; align-items: center; justify-content: center; gap: 3px;
-    }
-    .nav-btn-sm:hover { background: rgba(0,255,200,0.20); }
-    .nav-btn-sm.active { background: rgba(0,255,200,0.25); border-color: #00ffcc; color: #fff; }
-    .nav-btn-sm.engage {
-      background: rgba(0,200,120,0.20); border-color: rgba(0,255,160,0.5); color: #00ffaa;
-    }
-    .nav-btn-sm.engage:hover { background: rgba(0,200,120,0.35); }
-    .nav-btn-sm.disengage {
-      background: rgba(200,60,60,0.22); border-color: rgba(255,80,80,0.5); color: #ff8888;
-    }
-    .nav-btn-sm.disengage:hover { background: rgba(200,60,60,0.4); }
-    .nav-btn-sm:disabled { opacity: 0.35; cursor: not-allowed; }
-
-    .nav-status {
-      margin-top: 6px; font-size: 0.6rem; color: rgba(0,255,200,0.5);
-      min-height: 14px; text-align: center;
-    }
-    .nav-status.active { color: #00ffaa; animation: pulse 1.4s ease-in-out infinite; }
-    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }
-
-    .latency-gauge {
-      display: flex; align-items: center; gap: 8px; margin-top: 4px;
-    }
-    .latency-bar {
-      height: 4px; width: 60px; border-radius: 2px;
-      transition: width 0.2s, background 0.2s;
-    }
-
-    /* ── minimap ─────────────────────────────────────────────────────────────── */
-    .minimap-wrap  { position: absolute; bottom: 20px; left: 20px; z-index: 200; }
-    .minimap-label { color: rgba(255,255,255,0.35); font-size: 0.6rem; margin-bottom: 3px; text-transform: uppercase; }
-    canvas.minimap {
-      border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; display: block;
-      cursor: crosshair;
-    }
-    .minimap-hint { color: rgba(0,200,160,0.45); font-size: 0.55rem; margin-top: 2px; }
-
-    /* ── loader overlay ───────────────────────────────────────────── */
-    .loader-overlay {
-      position: fixed;
-      top: 0; left: 0; width: 100%; height: 100%;
-      background: rgba(0, 2, 18, 0.92);
-      backdrop-filter: blur(6px);
-      z-index: 4000;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      animation: loader-fade-in 0.3s ease;
-    }
-    @keyframes loader-fade-in {
-      from { opacity: 0; }
-      to   { opacity: 1; }
-    }
-    .loader-overlay.fade-out {
-      animation: loader-fade-out 0.6s ease forwards;
-      pointer-events: none;
-    }
-    @keyframes loader-fade-out {
-      from { opacity: 1; }
-      to   { opacity: 0; }
-    }
-
-    .loader-card {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2rem;
-    }
-
-    /* ── orrery animation ───────── */
-    .loader-orrery {
-      position: relative;
-      width: 140px;
-      height: 140px;
-    }
-
-    .loader-star-core {
-      position: absolute;
-      top: 50%; left: 50%;
-      width: 14px; height: 14px;
-      margin: -7px 0 0 -7px;
-      border-radius: 50%;
-      background: radial-gradient(circle, #fff8c0 0%, #ffcc44 55%, #ff8800 100%);
-      box-shadow:
-        0 0 10px 4px rgba(255, 200, 50, 0.7),
-        0 0 28px 8px rgba(255, 140, 0, 0.4);
-      animation: star-pulse 2.4s ease-in-out infinite;
-      z-index: 2;
-    }
-    @keyframes star-pulse {
-      0%, 100% {
-        box-shadow:
-          0 0 10px 4px rgba(255, 200, 50, 0.7),
-          0 0 28px 8px rgba(255, 140, 0, 0.4);
-      }
-      50% {
-        box-shadow:
-          0 0 16px 7px rgba(255, 220, 80, 0.95),
-          0 0 44px 14px rgba(255, 150, 0, 0.6);
-      }
-    }
-
-    .orbit-track {
-      position: absolute;
-      top: 50%; left: 50%;
-      border-radius: 50%;
-      border: 1px solid rgba(255,255,255,0.07);
-      transform: translate(-50%, -50%);
-    }
-
-    .orbit-arm {
-      position: absolute;
-      top: 50%; left: 50%;
-      width: 0; height: 0;
-      transform-origin: 0 0;
-    }
-
-    .orbit-planet {
-      position: absolute;
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-    }
-
-    /* Ring 1 – innermost, fast */
-    .orbit-arm-1 { animation: spin-cw 1.4s linear infinite; }
-    .orbit-track-1 { width: 52px; height: 52px; }
-    .orbit-planet-1 {
-      width: 6px; height: 6px;
-      top: -26px; left: 0;
-      background: #5bc8ff;
-      box-shadow: 0 0 5px 2px rgba(91,200,255,0.6);
-    }
-
-    /* Ring 2 – mid, medium */
-    .orbit-arm-2 { animation: spin-ccw 2.2s linear infinite; }
-    .orbit-track-2 { width: 84px; height: 84px; }
-    .orbit-planet-2 {
-      width: 7px; height: 7px;
-      top: -42px; left: 0;
-      background: #44ffcc;
-      box-shadow: 0 0 6px 2px rgba(68,255,204,0.65);
-    }
-
-    /* Ring 3 – outer, slow */
-    .orbit-arm-3 { animation: spin-cw 3.6s linear infinite; }
-    .orbit-track-3 { width: 120px; height: 120px; }
-    .orbit-planet-3 {
-      width: 9px; height: 9px;
-      top: -60px; left: 0;
-      background: #ffaa44;
-      box-shadow: 0 0 8px 3px rgba(255,170,68,0.6);
-    }
-
-    @keyframes spin-cw  { to { transform: rotate(360deg);  } }
-    @keyframes spin-ccw { to { transform: rotate(-360deg); } }
-
-    /* ── loader text ─────────────────────────────────────────────────────────── */
-    .loader-label {
-      font-family: monospace;
-      font-size: 0.65rem;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: rgba(100, 200, 255, 0.5);
-      margin-bottom: 0.2rem;
-    }
-
-    .loader-stage {
-      font-family: monospace;
-      font-size: 0.82rem;
-      letter-spacing: 0.06em;
-      color: #a0d8ff;
-      text-align: center;
-      min-height: 1.2em;
-      animation: text-flicker 3s ease-in-out infinite;
-    }
-    @keyframes text-flicker {
-      0%, 90%, 100% { opacity: 1; }
-      95%            { opacity: 0.6; }
-    }
-
-    .loader-bar-wrap {
-      width: 200px;
-      height: 2px;
-      background: rgba(255,255,255,0.08);
-      border-radius: 2px;
-      overflow: hidden;
-    }
-    .loader-bar-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #1a6aff, #00ffcc, #1a6aff);
-      background-size: 200% 100%;
-      animation: bar-sweep 1.6s linear infinite;
-      border-radius: 2px;
-    }
-    @keyframes bar-sweep {
-      0%   { background-position: 100% 0; }
-      100% { background-position: -100% 0; }
-    }
-
-    .date-panel, .help-panel { box-shadow: 0 4px 20px rgba(0,255,200,0.2); }
-  `],
-  template: `
-    <!-- ── Futuristic loading overlay ───────────────────────────────────────── -->
-    <div class="loader-overlay" *ngIf="isLoading" [class.fade-out]="fadingOut">
-      <div class="loader-card">
-
-        <!-- Orrery animation -->
-        <div class="loader-orrery">
-          <div class="loader-star-core"></div>
-
-          <div class="orbit-track orbit-track-1"></div>
-          <div class="orbit-track orbit-track-2"></div>
-          <div class="orbit-track orbit-track-3"></div>
-
-          <div class="orbit-arm orbit-arm-1">
-            <div class="orbit-planet orbit-planet-1"></div>
-          </div>
-          <div class="orbit-arm orbit-arm-2">
-            <div class="orbit-planet orbit-planet-2"></div>
-          </div>
-          <div class="orbit-arm orbit-arm-3">
-            <div class="orbit-planet orbit-planet-3"></div>
-          </div>
-        </div>
-
-        <!-- Progress text -->
-        <div>
-          <div class="loader-label">Initialising Heliosphere</div>
-          <div class="loader-stage">{{ loadingStage }}</div>
-        </div>
-
-        <!-- Scanning bar -->
-        <div class="loader-bar-wrap">
-          <div class="loader-bar-fill"></div>
-        </div>
-
-      </div>
-    </div>
-
-    <div id="content"
-         (click)="onContentClick($event)"
-         (mousedown)="onCanvasMouseDown($event)">
-
-      <!-- Flight hint -->
-      <span class="hud-hint">
-        {{ webGl.navRoute.active
-            ? '🛸 ROUTE ACTIVE — ESC to disengage · Mouse to look around'
-            : webGl.controls?.locked
-              ? '🚀 FLIGHT — ESC/Space exit · WASD move · R/F up/down · Shift=10× · Mouse look'
-              : 'Click viewport or Space to enter flight mode' }}
-      </span>
-
-      <!-- Camera diagnostics -->
-      <div class="info-panel camera-info">
-        <div>📍 POS: {{ cameraPos.x | number:'1.0-0' }}, {{ cameraPos.y | number:'1.0-0' }}, {{ cameraPos.z | number:'1.0-0' }}</div>
-        <div>🔆 DIR: {{ cameraDir.x | number:'1.2-2' }}, {{ cameraDir.y | number:'1.2-2' }}, {{ cameraDir.z | number:'1.2-2' }}</div>
-        <div>⚡ SPD: {{ cameraSpeed | number:'0.0-0' }} u/s</div>
-      </div>
-
-      <!-- Sim date -->
-      @if (simulationDate) {
-      <div class="info-panel date-info" >
-        <div>📅 SIM DATE: {{ simulationDate | date:'yyyy-MM-dd HH:mm:ss' }}</div>
-        <div>⏳ ΔT = {{ dateOffsetDays | number:'1.2-2' }} days</div>
-        <div>⏩ SIM SPEED: {{ simSpeed | number:'1.1-1' }}×</div>
-        <div class="latency-gauge">
-          <span>🕒 Latency:</span>
-          <span class="latency-value">{{ latencyMs | number:'1.0-0' }} ms</span>
-          <div class="latency-bar"
-               [style.width.%]="(latencyMs / maxLatencyMs) * 100"
-               [style.background]="latencyMs < 100 ? '#4caf50' : (latencyMs < 300 ? '#ff9800' : '#f44336')">
-          </div>
-        </div>
-      </div>
-      }
-
-      <!-- Selection bar – hierarchical order -->
-      <div class="selection-bar" *ngIf="selectedNames.size > 0">
-        ✦ {{ selectionHierarchyDisplay }}
-      </div>
-
-      <!-- Navigation mode bar -->
-      <div class="nav-mode-bar">
-        <button class="nav-btn"
-                [class.active]="webGl.navMode === NavMode.DISCOVERY"
-                title="Top-down discovery — see all orbits"
-                (click)="setNavMode(NavMode.DISCOVERY)">
-          <span class="mode-icon">🔭</span> Discovery
-        </button>
-        <button class="nav-btn"
-                [class.active]="webGl.navMode === NavMode.CINEMATIC"
-                title="Cinematic — geostationary orbital follow"
-                (click)="setNavMode(NavMode.CINEMATIC)">
-          <span class="mode-icon">🎬</span> Cinematic
-        </button>
-        <button class="nav-btn"
-                [class.active]="webGl.navMode === NavMode.FASTEST_TRAVEL"
-                title="Navigation — plan and fly custom routes"
-                (click)="setNavMode(NavMode.FASTEST_TRAVEL)">
-          <span class="mode-icon">🧭</span> Navigate
-        </button>
-      </div>
-
-      <!-- NEW: Date selector + mile markers -->
-      <div class="date-panel" style="position:absolute;top:60px;left:20px;background:rgba(0,0,0,0.75);padding:12px;border-radius:8px;z-index:210;width:240px;">
-        <div style="font-size:0.7rem;color:#ccddff;">📅 JUMP TO DATE</div>
-        <input id="dateSelector" type="datetime-local" [value]="selectedDateStr" style="width:100%;background:#112;color:#fff;border:1px solid #6699ff;padding:6px;border-radius:4px;">
-        <button (click)="jumpToDate()" style="margin-top:8px;width:100%;">🚀 Jump to Date</button>
-
-        <div style="margin-top:12px;font-size:0.65rem;color:#aaccff;">Mile Markers (centuries + comets)</div>
-        <div *ngFor="let m of milestones" (click)="jumpToMilestone(m.dateMs)"
-            style="cursor:pointer;padding:4px 8px;background:rgba(255,255,255,0.08);margin:4px 0;border-radius:4px;">
-          {{ m.name }} <small style="float:right;color:#88ffcc;">{{ m.dateMs | date:'yyyy' }}</small>
-          <div style="font-size:0.55rem;color:#88ccaa;">{{ m.desc }}</div>
-        </div>
-      </div>
-
-      <div class="help-panel" *ngIf="showHelpPanel" style="position:absolute;bottom:240px;right:20px;width:220px;background:rgba(0,0,20,0.85);border:1px solid rgba(80,140,255,0.5);border-radius:8px;padding:12px;z-index:220;font-size:0.72rem;">
-        <div style="color:#99ccff;margin-bottom:8px;">🔭 Teach me what to do next</div>
-        <button (click)="openExternalLink('https://solarsystem.nasa.gov/','solar-system')" style="display:block;width:100%;margin:4px 0;background:rgba(80,140,255,0.2);border:none;color:#ccddff;padding:6px;">NASA Solar System</button>
-        <button (click)="openExternalLink('https://en.wikipedia.org/wiki/Kepler%27s_laws_of_planetary_motion','kepler')" style="display:block;width:100%;margin:4px 0;background:rgba(80,140,255,0.2);border:none;color:#ccddff;padding:6px;">Kepler’s Laws</button>
-        <button (click)="openExternalLink('https://en.wikipedia.org/wiki/Halley%27s_Comet','halley')" style="display:block;width:100%;margin:4px 0;background:rgba(80,140,255,0.2);border:none;color:#ccddff;padding:6px;">Halley’s Comet</button>
-
-        <button *ngIf="isSimulationDatePast(1974)" (click)="openExternalLink('https://dl.acm.org/doi/epdf/10.1145/361011.361061', 'acm')" style="display:block;width:100%;margin:4px 0;background:rgba(80,140,255,0.2);border:none;color:#ccddff;padding:6px;">ACM: The UNIX Time-Sharing System</button>
-
-        <div *ngIf="isSimulationDatePast(2050)" style="margin-top:8px;color:#ffcc88;font-size:0.65rem;">
-          🌟 Future unlocked: 2061 Halley tracking
-        </div>
-      </div>
-
-      <!-- Sliders -->
-      <div class="sliders-panel">
-        <div class="slider-container">
-          <div class="slider-label">🕰 SIM TIME</div>
-          <input type="range" class="vertical" min="0" max="100" step="0.01"
-                 [value]="simSpeedSlider" (input)="onSimSpeedSlider($event)">
-          <div class="speed-value">{{ formatSpeed(simSpeed) }}</div>
-        </div>
-        <div class="slider-container">
-          <div class="slider-label">⚡ SPEED</div>
-          <input type="range" class="vertical" min="0" max="100"
-                 [value]="camSpeedSlider" (input)="onCamSpeedSlider($event)" orient="vertical">
-          <div class="speed-value">{{ camBaseSpeed | number:'0.0-0' }} u/s</div>
-        </div>
-      </div>
-
-      <!-- Orbit toggle controls -->
-      <div class="orbit-controls">
-        <button (click)="resetSimulation()" title="Reset simulation to current real time">
-          🔄 Reset Time
-        </button>
-        <button [class.active]="webGl.showPlanetOrbits"
-                (click)="webGl.toggleShowPlanetOrbits()">
-          🌍 Planets
-        </button>
-        <button [class.active]="webGl.showMoonOrbits"
-                (click)="webGl.toggleShowMoonOrbits()">
-          🌙 Moons
-        </button>
-        <button [class.active]="webGl.showCometOrbits"
-                (click)="webGl.toggleShowCometOrbits()">
-          ☄️ Comets
-        </button>
-        <button [class.active]="webGl.graphMode"
-                (click)="webGl.toggleGraphMode()">
-          🔲 Graph
-          <span class="status-badge" [class.on]="webGl.graphMode">
-            {{ webGl.graphMode ? 'ON' : 'OFF' }}
-          </span>
-        </button>
-        <button [class.active]="webGl.spectroscopyMode"
-                (click)="webGl.toggleSpectroscopyMode()">
-          📡 Spectroscopy
-          <span class="status-badge" [class.on]="webGl.spectroscopyMode">
-            {{ webGl.spectroscopyMode ? 'ON' : 'OFF' }}
-          </span>
-        </button>
-        <button [class.active]="webGl.showCoordinateGrids"
-                (click)="webGl.toggleShowCoordinateGrids()">
-          🌐 Coordinates Grid
-          <span class="status-badge" [class.on]="webGl.showCoordinateGrids">
-            {{ webGl.showCoordinateGrids ? 'ON' : 'OFF' }}
-          </span>
-        </button>
-        <button [class.active]="webGl.showMagneticFields"
-                (click)="webGl.toggleShowMagneticFields()">
-          🧲 Fields
-          <span class="status-badge" [class.on]="webGl.showMagneticFields">
-            {{ webGl.showMagneticFields ? 'ON' : 'OFF' }}
-          </span>
-        </button>
-        <button class="nav-btn-sm"
-                [class.active]="webGl.verifyMode"
-                (click)="webGl.toggleVerifyMode()">
-          🔭 Verify
-          <span class="status-badge" [class.on]="webGl.verifyMode">
-            {{ webGl.verifyMode ? 'ON' : 'OFF' }}
-          </span>
-        </button>
-        <button (click)="jumpToRandomStar()" title="Travel to a random new star system">
-          🚀 Jump
-        </button>
-        <button (click)="toggleMenu()" title="Toggle menu">
-          🟰 Menu
-        </button>
-      </div>
-
-      <!-- Planet selector panel -->
-      <div class="planet-panel">
-        <div class="planet-label">🪐 Celestial Bodies</div>
-        <div class="planet-multiselect-hint">
-          {{ webGl.navMode === NavMode.FASTEST_TRAVEL
-              ? '🧭 Click to add waypoint'
-              : 'Ctrl+click → multi-select · camera reframes' }}
-        </div>
-        <div *ngFor="let planet of planets"
-             class="planet-card"
-             [class.selected]="selectedNames.has(planet.name) && webGl.navMode !== NavMode.FASTEST_TRAVEL"
-             [class.waypoint]="isWaypoint(planet.name)"
-             [style.border-left-color]="planet.config?.color || '#4488ff'"
-             (click)="onPlanetCardClick(planet, $event)">
-          <div>
-            <div class="planet-name">{{ planet.name }}</div>
-            <div class="planet-meta">{{ planet.config?.au | number:'1.2-2' }} AU</div>
-          </div>
-          <canvas [attr.data-planet]="planet.name" class="indicator-canvas" width="24" height="24"></canvas>
-        </div>
-      </div>
-
-      <!-- ── Navigation Route Panel (FASTEST_TRAVEL mode) ─────────────────── -->
-      <div class="nav-panel" *ngIf="webGl.navMode === NavMode.FASTEST_TRAVEL">
-
-        <div class="nav-panel-title">
-          <span>🧭 Navigation Route</span>
-          <span style="font-size:0.55rem; opacity:0.5">{{ webGl.navRoute.waypoints.length }} pts</span>
-        </div>
-
-        <div class="nav-panel-hint">
-          🌍 Click planet panel to add body waypoint<br>
-          🗺 Click minimap to add coordinate waypoint
-        </div>
-
-        <!-- Waypoint list -->
-        <div class="waypoint-list">
-          <div *ngIf="webGl.navRoute.waypoints.length === 0" class="wp-empty">
-            — no waypoints — add via planet panel or minimap —
-          </div>
-          <div *ngFor="let wp of webGl.navRoute.waypoints; let i = index" class="waypoint-item">
-            <span class="waypoint-num">{{ i + 1 }}.</span>
-            <span class="waypoint-label" [title]="wp.label || wp.bodyName || 'Point'">
-              {{ wp.type === 'body' ? '🌍' : '📍' }} {{ wp.label || wp.bodyName }}
-            </span>
-            <input class="waypoint-dur" type="number" min="0" max="3600"
-                   [value]="wp.durationSec"
-                   (change)="onWpDurationChange(i, $event)"
-                   title="Duration at waypoint (seconds)">s
-            <button class="wp-remove" (click)="removeWaypoint(i)" title="Remove waypoint">✕</button>
-          </div>
-        </div>
-
-        <!-- Route actions -->
-        <div class="nav-actions">
-          <button class="nav-btn-sm" [class.active]="webGl.navRoute.loop"
-                  (click)="toggleNavLoop()"
-                  title="Loop route — return to start after last waypoint">
-            🔁 Circuit
-          </button>
-          <button class="nav-btn-sm" (click)="clearNavWaypoints()"
-                  [disabled]="webGl.navRoute.waypoints.length === 0"
-                  title="Clear all waypoints">
-            🗑 Clear
-          </button>
-        </div>
-
-        <div class="nav-actions" style="margin-top:6px">
-          <button *ngIf="!webGl.navRoute.active"
-                  class="nav-btn-sm engage"
-                  [disabled]="webGl.navRoute.waypoints.length === 0"
-                  (click)="engageRoute()"
-                  title="Engage route — camera flies autonomously">
-            🚀 Engage Route
-          </button>
-          <button *ngIf="webGl.navRoute.active"
-                  class="nav-btn-sm disengage"
-                  (click)="disengageRoute()"
-                  title="Disengage — stop autonomous flight (also ESC)">
-            ⏹ Disengage
-          </button>
-        </div>
-
-        <!-- Status line -->
-        <div class="nav-status" [class.active]="webGl.navRoute.active">
-          <ng-container *ngIf="webGl.navRoute.active">
-            ▶ WP {{ webGl.navRoute.currentIndex + 1 }}/{{ webGl.navRoute.waypoints.length }}
-            <ng-container *ngIf="webGl.navRoute.orbitRemaining > 0">
-              · 🛸 orbiting {{ webGl.navRoute.orbitRemaining | number:'1.0-0' }}s
-            </ng-container>
-          </ng-container>
-          <ng-container *ngIf="!webGl.navRoute.active && webGl.navRoute.waypoints.length > 0">
-            Ready — {{ webGl.navRoute.waypoints.length }} waypoint{{ webGl.navRoute.waypoints.length > 1 ? 's' : '' }}
-          </ng-container>
-        </div>
-      </div>
-
-      <!-- Minimap -->
-      <div class="minimap-wrap">
-        <div class="minimap-label">🌌 Solar System</div>
-        <canvas #minimap class="minimap" width="200" height="200"
-                (click)="onMinimapClick($event)"></canvas>
-        <div class="minimap-hint" *ngIf="webGl.navMode === NavMode.FASTEST_TRAVEL">
-          Click to add coordinate waypoint
-        </div>
-      </div>
-    </div>
-  `,
+  imports: [DatePipe, DecimalPipe],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styleUrl: './dashboard.component.css',
+  host: {
+    '(window:keydown)': 'onKeyDown($event)',
+    '(window:resize)': 'onResize()',
+    '(contextmenu)': '$event.preventDefault()',
+    '(wheel)': 'onMouseWheel($event)',
+  },
+  templateUrl: './dashboard.component.html',
 })
-export class DashboardComponent implements AfterViewInit, OnDestroy {
-  private readonly MIN_SPEED = 0.25;
-  private readonly MAX_SPEED = 1_000_000_000_000;
+/**
+ * Full-screen 3-D view and HUD. The WebGl engine is a root singleton, so it is
+ * created and started once and survives route changes; this component only
+ * attaches its canvas, drives the HUD/minimap, and detaches on destroy.
+ */
+export class DashboardComponent implements AfterViewInit {
+  protected readonly webGl = inject(WebGl);
+  private readonly layout = inject(LayoutService);
+  private readonly cdr = inject(ChangeDetectorRef);
+  private readonly destroyRef = inject(DestroyRef);
 
-  private subscriptions = new Subscription();
+  protected readonly NavMode = NavigationMode;
+  protected readonly formatSpeed = formatSpeed;
 
-  @ViewChild('minimap') minimapRef!: ElementRef<HTMLCanvasElement>;
+  private readonly content = viewChild.required<ElementRef<HTMLDivElement>>('content');
+  private readonly minimapRef = viewChild.required<ElementRef<HTMLCanvasElement>>('minimap');
+  private readonly dateInput = viewChild<ElementRef<HTMLInputElement>>('dateSelector');
+  private readonly indicators = viewChildren<ElementRef<HTMLCanvasElement>>('indicator');
 
-  readonly CameraView = CameraView;
-  readonly NavMode = NavigationMode;
+  // ── Loader ────────────────────────────────────────────────────────────────
+  readonly isLoading = signal(true);
+  readonly fadingOut = signal(false);
+  readonly busy = computed(() => !this.webGl.isReady() || this.webGl.loadingOverlay());
 
-  planets: any[] = [];
-  activeView: string | null = null;
-
-  // ── Loader state ──────────────────────────────────────────────────────────
-  isLoading = true;
-  fadingOut = false;
-  loadingStage = 'Connecting to server…';
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── HUD state ─────────────────────────────────────────────────────────────
+  readonly planets = signal<CelestialBody[]>([]);
+  readonly selectedNames = signal<ReadonlySet<string>>(new Set());
+  readonly selectionHierarchyDisplay = computed(() => {
+    const names = this.selectedNames();
+    return this.webGl.getSelectionHierarchyLabels().join('  ·  ') || [...names].join(', ');
+  });
 
   cameraPos = { x: 0, y: 0, z: 0 };
   cameraDir = { x: 0, y: 0, z: 0 };
   cameraSpeed = 0;
-
-  get simulationDate(): Date {
-    return this.webGl.simulationDate;
-  }
+  latencyMs = 0;
+  readonly maxLatencyMs = 500;
   dateOffsetDays = 0;
 
-  simSpeed = 1;
-  camBaseSpeed = 3000;
-  simSpeedSlider = 0;
-  camSpeedSlider = 50;
+  readonly simSpeed = computed(() => this.webGl.simulationSpeed());
+  readonly simSpeedSlider = computed(() => valueToLogSlider(this.simSpeed(), SIM_SPEED_MIN, SIM_SPEED_MAX));
+  readonly camBaseSpeed = signal(CAM_SPEED_DEFAULT);
+  readonly camSpeedSlider = computed(() => valueToLogSlider(this.camBaseSpeed(), CAM_SPEED_MIN, CAM_SPEED_MAX));
 
-  latencyMs = 0;
-  maxLatencyMs = 500;
-
-  private speedUpdateTimeout: any;
-
-  selectedNames = new Set<string>();
-
-  get selectionHierarchyDisplay(): string {
-    return this.webGl.getSelectionHierarchyLabels?.()?.join('  ·  ')
-      || [...this.selectedNames].join(', ');
-  }
-
-  selectedDateStr = new Date().toISOString().slice(0, 16);
-  milestones = [
-    { name: 'Halley 1986 Perihelion', dateMs: new Date('1986-02-09T00:00:00Z').getTime(), desc: 'Famous comet close approach' },
-    { name: 'J2000 Epoch', dateMs: new Date('2000-01-01T12:00:00Z').getTime(), desc: 'Standard reference' },
-    { name: 'Halley 2061 Return', dateMs: new Date('2061-07-28T00:00:00Z').getTime(), desc: 'Next Halley passage' },
-    { name: '2100 Century Marker', dateMs: new Date('2100-01-01T00:00:00Z').getTime(), desc: '22nd century start' }
+  selectedDateStr = toDateTimeLocalValue(new Date());
+  readonly milestones: readonly Milestone[] = [
+    { name: 'Halley 1986 Perihelion', dateMs: Date.UTC(1986, 1, 9), desc: 'Famous comet close approach' },
+    { name: 'J2000 Epoch', dateMs: Date.UTC(2000, 0, 1, 12), desc: 'Standard reference' },
+    { name: 'Halley 2061 Return', dateMs: Date.UTC(2061, 6, 28), desc: 'Next Halley passage' },
+    { name: '2100 Century Marker', dateMs: Date.UTC(2100, 0, 1), desc: '22nd century start' },
   ];
+  readonly helpLinks = [
+    { label: 'NASA Solar System', url: 'https://science.nasa.gov/solar-system/' },
+    { label: 'Kepler’s Laws', url: 'https://en.wikipedia.org/wiki/Kepler%27s_laws_of_planetary_motion' },
+    { label: 'Halley’s Comet', url: 'https://en.wikipedia.org/wiki/Halley%27s_Comet' },
+  ] as const;
+  readonly showHelpPanel = signal(true);
+  readonly wpDefaultDuration = 10;
 
-  showHelpPanel = true;
-
-  private minimapCtx!: CanvasRenderingContext2D;
+  private minimapCtx: CanvasRenderingContext2D | null = null;
   private minimapRaf = 0;
-  private destroyed = false;
-  private triangleIndicators = new Map<string, HTMLCanvasElement>();
+  private hudTimer: ReturnType<typeof setInterval> | undefined;
+  private loaderTimer: ReturnType<typeof setTimeout> | undefined;
+  private speedUpdateTimeout: ReturnType<typeof setTimeout> | undefined;
 
   private selectionRectActive = false;
   private selectionStart = { x: 0, y: 0 };
   private rectDiv: HTMLDivElement | null = null;
 
-  readonly wpDefaultDuration = 10;
+  constructor() {
+    this.layout.setNavbarHidden(true);
 
-  private showNavbar: BehaviorSubject<boolean>;
+    // Fade the loader out whenever the scene becomes ready — including revisits,
+    // where the scene already exists and no new "ready" event will fire.
+    effect(() => {
+      const busy = this.busy();
+      untracked(() => {
+        clearTimeout(this.loaderTimer);
+        if (busy) {
+          this.isLoading.set(true);
+          this.fadingOut.set(false);
+          return;
+        }
+        this.populatePlanetList();
+        if (!this.isLoading()) return;
+        this.fadingOut.set(true);
+        this.loaderTimer = setTimeout(() => {
+          this.isLoading.set(false);
+          this.fadingOut.set(false);
+        }, 620);
+      });
+    });
 
-  constructor(
-    public elementRef: ElementRef,
-    public webGl: WebGl,
-    private cdr: ChangeDetectorRef,
-    private zone: NgZone,
-  ) {
-    this.showNavbar = new BehaviorSubject<boolean>(false);
-  }
-
-  isSimulationDatePast(number?: number): boolean {
-    let date = new Date();
-
-    if (number !== undefined) {
-      // Normalize to a non-negative integer for digit-based classification
-      const n = Math.trunc(Math.abs(number));
-      const digits = n === 0 ? 1 : n.toString().length;
-
-      if (n === 0) {
-        // ─── Unix Epoch: January 1, 1970, 00:00:00 UTC ───────────────────────
-        date = new Date(0);
-
-      } else if (digits <= 4) {
-        // ─── Year only (1–9999) → Jan 1st of that year ───────────────────────
-        // setFullYear avoids JS's two-digit year quirk (e.g. new Date(99, …) → 1999)
-        date = new Date(0);
-        date.setFullYear(n, 0, 1);
-        date.setHours(0, 0, 0, 0);
-
-      } else if (digits <= 7) {
-        // ─── Unix timestamp in seconds, small era (10,000–9,999,999 s) ───────
-        // Covers ~1970-01-01T02:46:40Z to ~1970-04-26T17:46:39Z
-        date = new Date(n * 1_000);
-
-      } else if (digits === 8) {
-        // ─── YYYYMMDD (e.g. 20241215) ─────────────────────────────────────────
-        const y = Math.trunc(n / 10_000);
-        const mo = Math.trunc((n % 10_000) / 100) - 1; // 0-indexed month
-        const dy = n % 100;
-        date = new Date(0);
-        date.setFullYear(y, mo, dy);
-        date.setHours(0, 0, 0, 0);
-
-      } else if (digits <= 10) {
-        // ─── Unix timestamp in seconds (e.g. 1_700_000_000 → 2023-11-14) ─────
-        // Range: ~1973 to ~2286
-        date = new Date(n * 1_000);
-
-      } else if (digits <= 12) {
-        // ─── YYYYMMDDHHMM (e.g. 202412151430) ───────────────────────────────
-        const y = Math.trunc(n / 100_000_000);
-        const mo = Math.trunc((n % 100_000_000) / 1_000_000) - 1;
-        const dy = Math.trunc((n % 1_000_000) / 10_000);
-        const hr = Math.trunc((n % 10_000) / 100);
-        const min = n % 100;
-        date = new Date(0);
-        date.setFullYear(y, mo, dy);
-        date.setHours(hr, min, 0, 0);
-
-      } else if (digits === 13) {
-        // ─── Unix timestamp in milliseconds (e.g. 1_700_000_000_000) ─────────
-        // Standard JS Date input; covers ~1970 to ~2286
-        date = new Date(n);
-
-      } else {
-        // ─── YYYYMMDDHHMMSS (e.g. 20241215143045) ────────────────────────────
-        const y = Math.trunc(n / 10_000_000_000);
-        const mo = Math.trunc((n % 10_000_000_000) / 100_000_000) - 1;
-        const dy = Math.trunc((n % 100_000_000) / 1_000_000);
-        const hr = Math.trunc((n % 1_000_000) / 10_000);
-        const min = Math.trunc((n % 10_000) / 100);
-        const sec = n % 100;
-        date = new Date(0);
-        date.setFullYear(y, mo, dy);
-        date.setHours(hr, min, sec, 0);
-      }
-    }
-
-    return this.simulationDate.getTime() > date.getTime();
-  }
-
-  toggleMenu(): void {
-    this.showNavbar.next(!this.showNavbar.getValue());
-  }
-
-  listenToShowNavbar(): Observable<boolean> {
-    return this.showNavbar
-      .asObservable();
-  }
-
-  @HostListener('window:keydown', ['$event'])
-  onKeyDown(e: KeyboardEvent): void { this.webGl.keyDown(e); }
-
-  @HostListener('contextmenu', ['$event'])
-  onContextMenu(e: Event): void { e.preventDefault(); }
-
-  @HostListener('window:resize')
-  onResize(): void {
-    const c = this.elementRef.nativeElement.querySelector('#content');
-    if (c) this.webGl.resize(c.clientHeight, c.clientWidth);
-  }
-
-  @HostListener('wheel', ['$event'])
-  onMouseWheel(event: WheelEvent): void {
-    if (this.webGl.controls?.locked) {
-      event.preventDefault();
-      const direction = Math.sign(event.deltaY) * -1;
-      this.handleSpeedScroll(direction);
-    }
-  }
-
-  jumpToRandomStar(): void {
-    this.isLoading = true;
-    this.fadingOut = false;
-    this.loadingStage = 'Preparing jump…';
-    this.cdr.markForCheck();
-
-    this.webGl.jumpToRandomStar();
-  }
-
-  jumpToDate(): void {
-    const input = this.elementRef.nativeElement.querySelector('#dateSelector') as HTMLInputElement;
-    if (!input) return;
-    const date = new Date(input.value);
-    if (isNaN(date.getTime())) return;
-    this.webGl.jumpToDate(date.getTime());
-    this.isLoading = true;
-    this.fadingOut = false;
-  }
-
-  jumpToMilestone(dateMs: number): void {
-    this.webGl.jumpToDate(dateMs);
-  }
-
-  openExternalLink(url: string, topic: string): void {
-    const workerCode = `
-      self.onmessage = (e) => {
-        const agents = ['kepler-agent', 'comet-agent', 'nasa-agent'];
-        const hint = agents[Math.floor(Math.random() * agents.length)] + ' suggests: explore ' + e.data.topic;
-        self.postMessage(hint);
-      };
-    `;
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const worker = new Worker(URL.createObjectURL(blob));
-    worker.onmessage = (e) => {
-      console.log('🛰️ Agent prediction:', e.data);
-      worker.terminate();
-    };
-    worker.postMessage({ topic });
-
-    window.open(url, '_blank');
-  }
-
-  private handleSpeedScroll(direction: number): void {
-    const step = 2.0;
-    const nextVal = Math.min(100, Math.max(0, this.camSpeedSlider + (direction * step)));
-
-    if (nextVal !== this.camSpeedSlider) {
-      this.camSpeedSlider = nextVal;
-
-      const multiplier = (100 * Math.pow(50000 / 100, nextVal / 100)) / 3000;
-
-      const newBase = Math.min(50000, Math.max(3, 3000 * multiplier));
-      this.webGl.setCameraBaseSpeed(newBase);
-      this.camBaseSpeed = newBase;
-    }
+    this.destroyRef.onDestroy(() => {
+      this.layout.setNavbarHidden(false);
+      cancelAnimationFrame(this.minimapRaf);
+      clearInterval(this.hudTimer);
+      clearTimeout(this.loaderTimer);
+      clearTimeout(this.speedUpdateTimeout);
+      this.stopSelectionRect();
+      this.rectDiv?.remove();
+      this.webGl.onSelectionChanged = undefined;
+      this.webGl.controls?.exitFlight();
+      // Keep the renderer alive for the next visit, but detach its canvas.
+      this.webGl.getRenderer()?.domElement.remove();
+    });
   }
 
   ngAfterViewInit(): void {
-    const container = this.elementRef.nativeElement.querySelector('#content');
-    const rendererEl = this.webGl.getRenderer().domElement;
-    container.appendChild(rendererEl);
-    rendererEl.style.width = '100%';
-    rendererEl.style.height = '100%';
-
+    const container = this.content().nativeElement;
     if (!this.webGl.isActive()) {
       this.webGl.init(container.clientHeight, container.clientWidth);
       this.webGl.start();
     }
-
+    const canvas = this.webGl.getRenderer()?.domElement;
+    if (canvas) {
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      container.prepend(canvas);
+    }
     this.onResize();
-    this.minimapCtx = this.minimapRef.nativeElement.getContext('2d')!;
-    this.startMiniMapLoop();
-    this.startInfoUpdate();
 
-    this.webGl.onSelectionChanged = (names) => { this.selectedNames = new Set(names); };
+    this.webGl.onSelectionChanged = (names) => this.selectedNames.set(new Set(names));
+    this.selectedNames.set(new Set(this.webGl.selectedNames));
+    this.camBaseSpeed.set(this.webGl.controls?.baseMovementSpeed ?? CAM_SPEED_DEFAULT);
 
-    this.subscriptions.add(
-      this.webGl.simulationTime$.subscribe(time => {
-        this.dateOffsetDays = (time - Date.now()) / 86_400_000;
-      }),
-    );
+    this.minimapCtx = this.minimapRef().nativeElement.getContext('2d');
+    const draw = () => {
+      this.drawMiniMap();
+      this.minimapRaf = requestAnimationFrame(draw);
+    };
+    this.minimapRaf = requestAnimationFrame(draw);
 
-    this.subscriptions.add(
-      this.webGl.loadingStage$.subscribe(stage => {
-        this.zone.run(() => {
-          this.loadingStage = stage;
-          this.cdr.markForCheck();
-        });
-      }),
-    );
-
-    this.subscriptions.add(
-      this.webGl.ready$.subscribe(() => {
-        this.zone.run(() => {
-          this.populatePlanetList();
-
-          Promise.resolve().then(() => {
-            this.initTriangleIndicators();
-            this.fadingOut = true;
-            setTimeout(() => {
-              this.isLoading = false;
-              this.fadingOut = false;
-              this.cdr.markForCheck();
-            }, 620);
-            this.cdr.markForCheck();
-          });
-        });
-      }),
-    );
+    this.hudTimer = setInterval(() => this.refreshHud(), HUD_REFRESH_MS);
   }
 
-  ngOnDestroy(): void {
-    this.destroyed = true;
-    cancelAnimationFrame(this.minimapRaf);
-    this.subscriptions.unsubscribe();
+  /** Poll fast-changing renderer state into the HUD (zoneless: mark for check explicitly). */
+  refreshHud(): void {
+    const info = this.webGl.getCameraInfo();
+    this.cameraPos = { x: info.position.x, y: info.position.y, z: info.position.z };
+    this.cameraDir = { x: info.direction.x, y: info.direction.y, z: info.direction.z };
+    this.cameraSpeed = info.velocity;
+    const last = this.webGl.lastServerUpdate();
+    this.latencyMs = last ? Math.max(0, performance.now() - last) : 0;
+    this.dateOffsetDays = (this.webGl.simulationTime - Date.now()) / 86_400_000;
+    this.updateTriangleIndicators();
+    this.cdr.markForCheck();
+  }
+
+  get simulationDate(): Date {
+    return this.webGl.simulationDate;
+  }
+
+  /** True when the simulated date is after the date encoded by `value` (see {@link parseFlexibleDate}). */
+  isSimulationDatePast(value?: number): boolean {
+    const threshold = value === undefined ? new Date() : parseFlexibleDate(value);
+    return this.simulationDate.getTime() > threshold.getTime();
+  }
+
+  // ── Host events ───────────────────────────────────────────────────────────
+
+  onKeyDown(e: KeyboardEvent): void {
+    this.webGl.keyDown(e);
+  }
+
+  onResize(): void {
+    const c = this.content().nativeElement;
+    this.webGl.resize(c.clientHeight, c.clientWidth);
+  }
+
+  onMouseWheel(event: WheelEvent): void {
+    if (!this.webGl.controls?.locked) return;
+    event.preventDefault();
+    this.nudgeCamSpeed(-Math.sign(event.deltaY));
+  }
+
+  toggleMenu(): void {
+    this.layout.toggleNavbar();
+  }
+
+  // ── Simulation controls ───────────────────────────────────────────────────
+
+  jumpToRandomStar(): void {
+    this.isLoading.set(true);
+    this.fadingOut.set(false);
+    this.webGl.jumpToRandomStar();
+  }
+
+  jumpToDate(): void {
+    const ms = parseDateTimeLocalValue(this.dateInput()?.nativeElement.value ?? '');
+    if (ms === null) return;
+    this.selectedDateStr = toDateTimeLocalValue(new Date(ms));
+    this.webGl.jumpToDate(ms);
+  }
+
+  jumpToMilestone(dateMs: number): void {
+    this.selectedDateStr = toDateTimeLocalValue(new Date(dateMs));
+    this.webGl.jumpToDate(dateMs);
+  }
+
+  openExternalLink(url: string): void {
+    globalThis.open?.(url, '_blank', 'noopener,noreferrer');
+  }
+
+  onSimSpeedSlider(event: Event): void {
+    const position = parseFloat((event.target as HTMLInputElement).value);
+    if (Number.isNaN(position)) return;
+    this.sendSpeed(snapSimSpeed(logSliderToValue(position, SIM_SPEED_MIN, SIM_SPEED_MAX)));
+  }
+
+  private sendSpeed(speed: number): void {
+    clearTimeout(this.speedUpdateTimeout);
+    this.speedUpdateTimeout = setTimeout(() => this.webGl.setSimulationSpeed(speed), 50);
+  }
+
+  setCamSpeed(speed: number): void {
+    const clamped = Math.min(CAM_SPEED_MAX, Math.max(CAM_SPEED_MIN, speed));
+    this.camBaseSpeed.set(clamped);
+    this.webGl.setCameraBaseSpeed(clamped);
+  }
+
+  onCamSpeedSlider(event: Event): void {
+    const position = parseFloat((event.target as HTMLInputElement).value);
+    if (!Number.isNaN(position)) this.setCamSpeed(logSliderToValue(position, CAM_SPEED_MIN, CAM_SPEED_MAX));
+  }
+
+  private nudgeCamSpeed(direction: number): void {
+    const next = Math.min(100, Math.max(0, this.camSpeedSlider() + direction * 2));
+    this.setCamSpeed(logSliderToValue(next, CAM_SPEED_MIN, CAM_SPEED_MAX));
+  }
+
+  resetSimulation(): void {
+    this.webGl.resetSimulation();
+    clearTimeout(this.speedUpdateTimeout);
+    this.webGl.simulationSpeed.set(1);
+    this.setCamSpeed(CAM_SPEED_DEFAULT);
+    this.dateOffsetDays = 0;
+  }
+
+  // ── Selection & navigation ────────────────────────────────────────────────
+
+  private isHud(target: EventTarget | null): boolean {
+    return !!(target as HTMLElement | null)?.closest?.(HUD_SELECTOR);
   }
 
   onContentClick(event: MouseEvent): void {
-    const isHud = (event.target as HTMLElement).closest(
-      '.planet-panel, .sliders-panel, .minimap-wrap, .orbit-controls, .info-panel, .nav-mode-bar, .nav-panel'
-    );
-    if (isHud) return;
+    if (this.isHud(event.target)) return;
     if (!this.webGl.controls?.locked) this.webGl.controls?.enterFlight();
   }
 
+  /** Right button starts a box selection; left button picks a body (when not in flight mode). */
   onCanvasMouseDown(event: MouseEvent): void {
-    const isHud = (event.target as HTMLElement).closest(
-      '.planet-panel, .sliders-panel, .minimap-wrap, .orbit-controls, .info-panel, .nav-mode-bar, .nav-panel'
-    );
-    if (isHud) return;
+    if (this.isHud(event.target)) return;
+    const canvas = this.webGl.getRenderer()?.domElement;
+    if (!canvas) return;
 
     if (event.button === 2) {
       event.preventDefault();
-      const rect = this.webGl.getRenderer().domElement.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       this.selectionStart = { x: event.clientX - rect.left, y: event.clientY - rect.top };
       this.selectionRectActive = true;
-      this.createRectDiv();
+      this.ensureRectDiv();
       window.addEventListener('mousemove', this.onSelectionMouseMove);
       window.addEventListener('mouseup', this.onSelectionMouseUp);
       return;
     }
-
     if (this.webGl.controls?.locked) return;
-    const multiselect = event.ctrlKey || event.metaKey;
-    this.webGl.handleCanvasClick(event, multiselect);
-    this.selectedNames = new Set(this.webGl.selectedNames);
+    this.webGl.handleCanvasClick(event, event.ctrlKey || event.metaKey);
   }
 
-  private onSelectionMouseMove = (e: MouseEvent): void => {
-    if (!this.selectionRectActive) return;
-    const rect = this.webGl.getRenderer().domElement.getBoundingClientRect();
-    const currentX = e.clientX - rect.left;
-    const currentY = e.clientY - rect.top;
-    const left = Math.min(this.selectionStart.x, currentX);
-    const top = Math.min(this.selectionStart.y, currentY);
-    if (this.rectDiv) {
-      this.rectDiv.style.left = left + 'px';
-      this.rectDiv.style.top = top + 'px';
-      this.rectDiv.style.width = Math.abs(currentX - this.selectionStart.x) + 'px';
-      this.rectDiv.style.height = Math.abs(currentY - this.selectionStart.y) + 'px';
-      this.rectDiv.style.display = 'block';
-    }
+  private readonly onSelectionMouseMove = (e: MouseEvent): void => {
+    const canvas = this.webGl.getRenderer()?.domElement;
+    if (!this.selectionRectActive || !this.rectDiv || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    Object.assign(this.rectDiv.style, {
+      left: `${Math.min(this.selectionStart.x, x)}px`,
+      top: `${Math.min(this.selectionStart.y, y)}px`,
+      width: `${Math.abs(x - this.selectionStart.x)}px`,
+      height: `${Math.abs(y - this.selectionStart.y)}px`,
+      display: 'block',
+    });
   };
 
-  private onSelectionMouseUp = (e: MouseEvent): void => {
-    if (!this.selectionRectActive) return;
+  private readonly onSelectionMouseUp = (e: MouseEvent): void => {
+    const canvas = this.webGl.getRenderer()?.domElement;
+    if (!this.selectionRectActive || !canvas) return;
     e.preventDefault();
-    const rect = this.webGl.getRenderer().domElement.getBoundingClientRect();
-    const end = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    this.webGl.selectInRect(
-      { x: this.selectionStart.x, y: this.selectionStart.y },
-      { x: end.x, y: end.y },
-      e.ctrlKey,
-    );
-    this.selectedNames = new Set(this.webGl.selectedNames);
+    const rect = canvas.getBoundingClientRect();
+    this.webGl.selectInRect(this.selectionStart, { x: e.clientX - rect.left, y: e.clientY - rect.top }, e.ctrlKey || e.metaKey);
+    this.stopSelectionRect();
+  };
+
+  private stopSelectionRect(): void {
     this.selectionRectActive = false;
     if (this.rectDiv) this.rectDiv.style.display = 'none';
     window.removeEventListener('mousemove', this.onSelectionMouseMove);
     window.removeEventListener('mouseup', this.onSelectionMouseUp);
-  };
-
-  private createRectDiv(): void {
-    if (this.rectDiv) return;
-    this.rectDiv = document.createElement('div');
-    this.rectDiv.style.position = 'absolute';
-    this.rectDiv.style.border = '1px dashed #00ffcc';
-    this.rectDiv.style.backgroundColor = 'rgba(0,255,200,0.08)';
-    this.rectDiv.style.pointerEvents = 'none';
-    this.rectDiv.style.display = 'none';
-    this.rectDiv.style.zIndex = '300';
-    this.elementRef.nativeElement.querySelector('#content').appendChild(this.rectDiv);
   }
 
+  private ensureRectDiv(): void {
+    if (this.rectDiv) return;
+    this.rectDiv = document.createElement('div');
+    this.rectDiv.className = 'selection-rect';
+    this.rectDiv.style.position = 'absolute';
+    this.rectDiv.style.display = 'none';
+    this.content().nativeElement.appendChild(this.rectDiv);
+  }
+
+  /** In navigation mode a minimap click adds a coordinate waypoint on the ecliptic. */
   onMinimapClick(event: MouseEvent): void {
     if (this.webGl.navMode !== NavigationMode.FASTEST_TRAVEL) return;
     event.stopPropagation();
-    const canvas = this.minimapRef.nativeElement;
-    const r = canvas.getBoundingClientRect();
-    const px = event.clientX - r.left;
-    const py = event.clientY - r.top;
-    const W = 200, H = 200, cx = W / 2, cy = H / 2;
-    const AU_SCENE = SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
-    const OUTER_AU = 30.5;
-    const scale = (W * 0.45) / (OUTER_AU * AU_SCENE);
-    const worldX = (px - cx) / scale;
-    const worldY = -(py - cy) / scale;
-    this.webGl.addNavWaypointCoordinate(worldX, worldY, this.wpDefaultDuration);
+    const r = this.minimapRef().nativeElement.getBoundingClientRect();
+    const { x, z } = minimapToWorld(event.clientX - r.left, event.clientY - r.top);
+    this.webGl.addNavWaypointCoordinate(x, z, this.wpDefaultDuration);
   }
 
   setNavMode(mode: NavigationMode): void {
     this.webGl.setNavigationMode(mode);
   }
 
-  onPlanetCardClick(planet: any, event: MouseEvent): void {
+  /** Body-list click: add a waypoint (navigation mode), toggle (Ctrl/⌘) or select and fly to the body. */
+  onPlanetCardClick(planet: CelestialBody, event: MouseEvent): void {
     event.stopPropagation();
-
     if (this.webGl.navMode === NavigationMode.FASTEST_TRAVEL) {
       this.webGl.addNavWaypointBody(planet.name, this.wpDefaultDuration);
       return;
     }
-
-    const multiselect = event.ctrlKey || event.metaKey;
-    if (multiselect) {
-      if (this.selectedNames.has(planet.name)) {
-        this.selectedNames.delete(planet.name);
-        this.webGl.selectedNames.delete(planet.name);
-        this.webGl.setHighlight(planet.name, false);
-      } else {
-        this.selectedNames.add(planet.name);
-        this.webGl.selectedNames.add(planet.name);
-        this.webGl.setHighlight(planet.name, true);
-      }
-      this.webGl.onSelectionChanged?.(new Set(this.selectedNames));
+    if (event.ctrlKey || event.metaKey) {
+      this.webGl.toggleSelection(planet.name);
       this.webGl.navigateToSelection();
     } else {
       this.webGl.selectBodies([planet.name], true);
-      this.selectedNames = new Set(this.webGl.selectedNames);
     }
   }
 
   isWaypoint(name: string): boolean {
-    return this.webGl.navRoute.waypoints.some(w => w.type === 'body' && w.bodyName === name);
+    return this.webGl.navRoute.waypoints.some((w) => w.type === 'body' && w.bodyName === name);
+  }
+
+  auOf(body: CelestialBody): number {
+    return (body.config as { au?: number }).au ?? 0;
   }
 
   removeWaypoint(index: number): void { this.webGl.removeNavWaypoint(index); }
@@ -1120,89 +412,21 @@ export class DashboardComponent implements AfterViewInit, OnDestroy {
 
   onWpDurationChange(index: number, event: Event): void {
     const val = parseFloat((event.target as HTMLInputElement).value);
-    if (!isNaN(val) && val >= 0) this.webGl.updateNavWaypointDuration(index, val);
+    if (!Number.isNaN(val) && val >= 0) this.webGl.updateNavWaypointDuration(index, val);
   }
 
-  setSimSpeed(speed: number): void {
-    const clamped = Math.min(this.MAX_SPEED, Math.max(this.MIN_SPEED, speed));
-    this.simSpeed = clamped;
-    this.simSpeedSlider = Math.log(clamped / this.MIN_SPEED) / Math.log(this.MAX_SPEED / this.MIN_SPEED) * 100;
-    this.sendSpeed(clamped);
-  }
-
-  onSimSpeedSlider(event: Event): void {
-    const val = parseFloat((event.target as HTMLInputElement).value);
-    this.simSpeedSlider = val;
-    const raw = this.MIN_SPEED * Math.pow(this.MAX_SPEED / this.MIN_SPEED, val / 100);
-    const snapped = this.snapSpeed(raw);
-    this.simSpeed = snapped;
-    this.sendSpeed(snapped);
-  }
-
-  private snapSpeed(value: number): number {
-    if (value < 1) {
-      if (value < 0.375) return 0.25;
-      if (value < 0.75) return 0.5;
-      return 1;
-    }
-    return Math.pow(10, Math.round(Math.log10(value)));
-  }
-
-  private sendSpeed(speed: number): void {
-    clearTimeout(this.speedUpdateTimeout);
-    this.speedUpdateTimeout = setTimeout(() => { this.webGl.setSimulationSpeed(speed); }, 50);
-  }
-
-  formatSpeed(speed: number): string {
-    if (speed < 1) return speed.toFixed(2) + '×';
-    if (speed < 1000) return speed.toFixed(0) + '×';
-    if (speed < 1_000_000) return (speed / 1000).toFixed(0) + 'K×';
-    if (speed < 1_000_000_000) return (speed / 1_000_000).toFixed(0) + 'M×';
-    return (speed / 1_000_000_000).toFixed(0) + 'B×';
-  }
-
-  setCamSpeed(multiplier: number): void {
-    const newBase = Math.min(50_000, Math.max(3, 3000 * multiplier));
-    this.webGl.setCameraBaseSpeed(newBase);
-    this.camBaseSpeed = newBase;
-    this.camSpeedSlider = Math.log(newBase / 3) / Math.log(50_000 / 3) * 100;
-  }
-
-  onCamSpeedSlider(event: Event): void {
-    const val = parseFloat((event.target as HTMLInputElement).value);
-    this.camSpeedSlider = val;
-    this.setCamSpeed(100 * Math.pow(50_000 / 100, val / 100) / 3000);
-  }
-
-  resetSimulation(): void {
-    this.webGl.resetSimulation();
-    this.setSimSpeed(1);
-    this.simSpeedSlider = 0;
-    this.camSpeedSlider = 50;
-    this.setCamSpeed(1);
-    this.dateOffsetDays = 0;
-  }
+  // ── Drawing ───────────────────────────────────────────────────────────────
 
   private populatePlanetList(): void {
-    if (!this.webGl.star?.satellites?.length) return;
-    this.planets = [this.webGl.star, ...this.webGl.star.satellites]
-      .sort((a: any, b: any) => (a.config?.au ?? 0) - (b.config?.au ?? 0));
-  }
-
-  private initTriangleIndicators(): void {
-    this.triangleIndicators.clear();
-    this.elementRef.nativeElement
-      .querySelectorAll('.planet-card canvas.indicator-canvas')
-      .forEach((el: Element) => {
-        const canvas = el as HTMLCanvasElement;
-        const name = canvas.getAttribute('data-planet');
-        if (name) this.triangleIndicators.set(name, canvas);
-      });
+    const star = this.webGl.star;
+    this.planets.set(star ? [star, ...star.satellites].sort((a, b) => this.auOf(a) - this.auOf(b)) : []);
   }
 
   private updateTriangleIndicators(): void {
-    for (const [name, canvas] of this.triangleIndicators) {
-      this.drawTriangle(canvas, this.webGl.getBodyPhaseAngle(name));
+    for (const ref of this.indicators()) {
+      const canvas = ref.nativeElement;
+      const name = canvas.dataset['planet'];
+      if (name) this.drawTriangle(canvas, this.webGl.getBodyPhaseAngle(name));
     }
   }
 
@@ -1215,81 +439,59 @@ export class DashboardComponent implements AfterViewInit, OnDestroy {
     ctx.fillStyle = this.webGl.navMode === NavigationMode.FASTEST_TRAVEL ? '#00ffcc' : '#ffaa44';
     ctx.beginPath();
     ctx.moveTo(cx + Math.cos(angleRad) * 10, cy + Math.sin(angleRad) * 10);
-    ctx.lineTo(cx + Math.cos(angleRad + 2.0) * 6, cy + Math.sin(angleRad + 2.0) * 6);
-    ctx.lineTo(cx + Math.cos(angleRad - 2.0) * 6, cy + Math.sin(angleRad - 2.0) * 6);
+    ctx.lineTo(cx + Math.cos(angleRad + 2) * 6, cy + Math.sin(angleRad + 2) * 6);
+    ctx.lineTo(cx + Math.cos(angleRad - 2) * 6, cy + Math.sin(angleRad - 2) * 6);
     ctx.fill();
   }
 
-  private startInfoUpdate(): void {
-    setInterval(() => {
-      const info = this.webGl.getCameraInfo();
-      this.latencyMs = Math.abs(Date.now() - this.webGl.simulationTime);
-      this.cameraPos = info.position;
-      this.cameraDir = info.direction;
-      this.cameraSpeed = info.velocity;
-      this.updateTriangleIndicators();
-    }, 80);
-  }
-
-  private startMiniMapLoop(): void {
-    const draw = () => {
-      if (this.destroyed) return;
-      this.drawMiniMap();
-      this.minimapRaf = requestAnimationFrame(draw);
-    };
-    this.minimapRaf = requestAnimationFrame(draw);
-  }
-
+  /** Top-down ecliptic map: orbits, bodies, route and a camera arrow (redrawn every animation frame). */
   private drawMiniMap(): void {
     const ctx = this.minimapCtx;
     if (!ctx || !this.webGl.camera) return;
-
-    const W = 200, H = 200, cx = W / 2, cy = H / 2;
-    const AU_SCENE = SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
-    const OUTER_AU = 30.5;
-    const scale = (W * 0.45) / (OUTER_AU * AU_SCENE);
+    const W = MINIMAP_SIZE, H = MINIMAP_SIZE, cx = W / 2, cy = H / 2;
+    const AU = SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
 
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = 'rgba(0,4,18,0.9)';
     ctx.fillRect(0, 0, W, H);
 
     const snap = this.webGl.getSystemSnapshot();
+    const selected = this.selectedNames();
 
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     for (const body of snap.bodies) {
       if (body.isStar || body.au <= 0) continue;
       ctx.beginPath();
-      ctx.arc(cx, cy, body.au * AU_SCENE * scale, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.arc(cx, cy, body.au * AU * MINIMAP_SCALE, 0, Math.PI * 2);
       ctx.stroke();
     }
 
     if (this.webGl.navMode === NavigationMode.FASTEST_TRAVEL && this.webGl.navRoute.waypoints.length > 0) {
-      this.drawNavPathOnMinimap(ctx, cx, cy, scale);
+      this.drawNavPathOnMinimap(ctx, snap);
     }
 
     for (const body of snap.bodies) {
-      const bx = cx + body.x * scale;
-      const by = cy - body.y * scale;
+      const p = worldToMinimap(body.x, body.y);
       ctx.beginPath();
-      ctx.arc(bx, by, body.isStar ? 5 : 2.5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, body.isStar ? 5 : 2.5, 0, Math.PI * 2);
       ctx.fillStyle = body.color || '#aaaaff';
-      if (this.selectedNames.has(body.name)) { ctx.shadowColor = '#88ccff'; ctx.shadowBlur = 8; }
+      if (selected.has(body.name)) { ctx.shadowColor = '#88ccff'; ctx.shadowBlur = 8; }
       if (this.isWaypoint(body.name)) { ctx.shadowColor = '#00ffcc'; ctx.shadowBlur = 10; }
       ctx.fill();
       ctx.shadowBlur = 0;
-      if (!body.isStar && body.au <= OUTER_AU) {
+      if (!body.isStar && body.au <= MINIMAP_OUTER_AU) {
         ctx.fillStyle = 'rgba(200,210,255,0.65)';
         ctx.font = '7px monospace';
-        ctx.fillText(body.name.slice(0, 3), bx + 3.5, by - 2);
+        ctx.fillText(body.name.slice(0, 3), p.x + 3.5, p.y - 2);
       }
     }
 
-    const camX = Math.max(8, Math.min(W - 8, cx + snap.camera.x * scale));
-    const camY = Math.max(8, Math.min(H - 8, cy - snap.camera.y * scale));
-    const camAngle = this.webGl.getCameraAzimuth();
+    const cam = worldToMinimap(snap.camera.x, snap.camera.y);
+    const camX = Math.max(8, Math.min(W - 8, cam.x));
+    const camY = Math.max(8, Math.min(H - 8, cam.y));
     ctx.save();
     ctx.translate(camX, camY);
-    ctx.rotate(camAngle);
+    ctx.rotate(this.webGl.getCameraAzimuth());
     ctx.beginPath();
     ctx.moveTo(0, -7);
     ctx.lineTo(-4, 5);
@@ -1297,50 +499,37 @@ export class DashboardComponent implements AfterViewInit, OnDestroy {
     ctx.fillStyle = this.webGl.navRoute.active ? '#00ffaa' : '#00ff88';
     ctx.fill();
     ctx.restore();
-
     ctx.fillStyle = '#00ff88';
     ctx.font = '7px monospace';
     ctx.fillText('CAM', camX + 8, camY + 4);
   }
 
-  private drawNavPathOnMinimap(
-    ctx: CanvasRenderingContext2D, cx: number, cy: number, scale: number,
-  ): void {
-    const wps = this.webGl.navRoute.waypoints;
-    const snap = this.webGl.getSystemSnapshot();
-    const camX = cx + snap.camera.x * scale;
-    const camY = cy - snap.camera.y * scale;
-
-    const points: { x: number; y: number }[] = [{ x: camX, y: camY }];
-
-    for (const wp of wps) {
+  private drawNavPathOnMinimap(ctx: CanvasRenderingContext2D, snap: ReturnType<WebGl['getSystemSnapshot']>): void {
+    const route = this.webGl.navRoute;
+    const points = [worldToMinimap(snap.camera.x, snap.camera.y)];
+    for (const wp of route.waypoints) {
       if (wp.type === 'body' && wp.bodyName) {
-        const body = snap.bodies.find(b => b.name === wp.bodyName);
-        if (body) points.push({ x: cx + body.x * scale, y: cy - body.y * scale });
+        const body = snap.bodies.find((b) => b.name === wp.bodyName);
+        if (body) points.push(worldToMinimap(body.x, body.y));
       } else if (wp.type === 'coordinate' && wp.position) {
-        points.push({ x: cx + wp.position.x * scale, y: cy - wp.position.y * scale });
+        points.push(worldToMinimap(wp.position.x, wp.position.z));
       }
     }
-
-    if (this.webGl.navRoute.loop && points.length > 2) points.push(points[1]);
+    if (route.loop && points.length > 2) points.push(points[1]);
 
     ctx.save();
     ctx.setLineDash([3, 4]);
     ctx.strokeStyle = 'rgba(0,255,200,0.6)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    if (points.length > 0) {
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-    }
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
     ctx.stroke();
     ctx.setLineDash([]);
-
     for (let i = 1; i < points.length; i++) {
       ctx.beginPath();
       ctx.arc(points[i].x, points[i].y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = i - 1 === this.webGl.navRoute.currentIndex && this.webGl.navRoute.active
-        ? '#00ffaa' : 'rgba(0,255,200,0.6)';
+      ctx.fillStyle = i - 1 === route.currentIndex && route.active ? '#00ffaa' : 'rgba(0,255,200,0.6)';
       ctx.fill();
       ctx.fillStyle = 'rgba(0,255,200,0.8)';
       ctx.font = '6px monospace';

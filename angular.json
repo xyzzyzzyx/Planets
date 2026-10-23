@@ -10,15 +10,11 @@
       "prefix": "app",
       "architect": {
         "build": {
-          "builder": "@angular-devkit/build-angular:application",
+          "builder": "@angular/build:application",
           "options": {
             "outputPath": "dist/planets",
             "index": "view/index.html",
             "browser": "app/main.ts",
-            "polyfills": [
-              "zone.js",
-              "@angular/localize/init"
-            ],
             "tsConfig": "tsconfig.app.json",
             "assets": [
               {
@@ -55,16 +51,14 @@
                 "glob": "**/*",
                 "input": "resources/moons",
                 "output": "/resources/moons"
-              },
-              {
-                "glob": "**/*",
-                "input": "resources/sims",
-                "output": "/resources/sims"
               }
             ],
             "styles": [
               "node_modules/bootstrap/dist/css/bootstrap.min.css",
               "node_modules/bootstrap-icons/font/bootstrap-icons.min.css",
+              "node_modules/@fontsource/share-tech-mono/400.css",
+              "node_modules/@fontsource/orbitron/400.css",
+              "node_modules/@fontsource/orbitron/700.css",
               "resources/styles/main.css"
             ],
             "scripts": []
@@ -77,7 +71,19 @@
                   "with": "app/environments/environment.prod.ts"
                 }
               ],
-              "outputHashing": "all"
+              "outputHashing": "all",
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "2MB",
+                  "maximumError": "4MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "16kB",
+                  "maximumError": "32kB"
+                }
+              ]
             },
             "development": {
               "optimization": false,
@@ -88,7 +94,7 @@
           "defaultConfiguration": "production"
         },
         "serve": {
-          "builder": "@angular-devkit/build-angular:dev-server",
+          "builder": "@angular/build:dev-server",
           "options": {
             "proxyConfig": "proxy.conf.json"
           },
@@ -101,19 +107,25 @@
             }
           },
           "defaultConfiguration": "development"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "tsconfig.spec.json",
+            "runner": "vitest",
+            "buildTarget": "planets:build:development"
+          }
+        }
+      },
+      "schematics": {
+        "@schematics/angular:component": {
+          "changeDetection": "OnPush"
         }
       }
     }
   },
-  "schematics": {
-    "@schematics/angular:component": {
-      "standalone": true
-    },
-    "@schematics/angular:application": {
-      "strict": true
-    }
-  },
   "cli": {
-    "analytics": false
+    "analytics": false,
+    "packageManager": "npm"
   }
 }

@@ -1,270 +1,254 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import * as THREE from 'three';
-import { AssetTextureService } from '../webgl/asset-texture.service';
+import { AssetTextureService, hasImage } from '../webgl/asset-texture.service';
 import { CelestialFactory } from './celestial.factory';
-import { CometConfig, PlanetConfig, RingConfig, SIMULATION_CONSTANTS, StarConfig } from './celestial.model';
+import { CelestialBody, CometConfig, MoonConfig, PlanetConfig, RingConfig, SIMULATION_CONSTANTS, StarConfig, visualRadiusFor } from './celestial.model';
 import { CometFactory } from './comet.factory';
 import { MoonFactory } from './moon.factory';
 import { PlanetFactory } from './planet.factory';
 import { Star } from './star.model';
 
+export const STAR_MIN_VISUAL_RADIUS = 10;
+
+/** userData attached to every animated ring mesh. */
+export interface RingUserData {
+  rotate: boolean;
+  angularSpeedRadPerMs: number;
+  ringName: string;
+  ownerName: string;
+}
+
+export type RingMesh = (THREE.InstancedMesh | THREE.Mesh) & { userData: Partial<RingUserData> };
+
+export type SatelliteConfig = (PlanetConfig | CometConfig) & { moons?: MoonConfig[] };
+
+interface ParticleRingOptions {
+  inner: number;
+  outer: number;
+  count: number;
+  tiltDeg: number;
+  axis: THREE.Vector3;
+  thickness: number;
+  color: string;
+  textureUrl?: string;
+  keplerian: boolean;
+  parent: THREE.Object3D;
+  angularSpeedRadPerMs?: number;
+  particleSize?: number;
+  name: string;
+  ownerName: string;
+}
+
+/** Quaternion that maps the ring plane's reference axis (+X, see CelestialBody.axis) onto `axis`. */
+function ringOrientation(axis: THREE.Vector3): THREE.Quaternion {
+  return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), axis.clone().normalize());
+}
+
+/** Rotation rate of a Keplerian belt at the given mean radius (scene units), rad per simulated ms. */
+export function keplerianAngularSpeed(meanRadius: number): number {
+  const au = meanRadius / SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
+  const periodMs = Math.sqrt(au ** 3) * 365.25 * 86_400_000;
+  return periodMs > 0 ? (2 * Math.PI) / periodMs : 0;
+}
+
+/**
+ * Planetary ring radii are authored in visual units. Values that would sit
+ * inside the planet are replaced with a sensible default band.
+ */
+export function safePlanetRingRadii(inner: number | undefined, outer: number | undefined, visualDiameter: number): [number, number] {
+  const minSafeRadius = visualDiameter * 0.55;
+  const i = inner ?? 0;
+  const o = outer ?? 0;
+  if (i <= minSafeRadius || o <= i) return [visualDiameter * 1.15, visualDiameter * 2.2];
+  return [i, o];
+}
+
+/**
+ * Builds the star (mesh + lights) and assembles the rest of the system:
+ * planets with moons, comets, star belts and planetary rings. Animated ring
+ * meshes are tracked in {@link StarFactory.keplerianRings} for the render loop.
+ */
 @Injectable({ providedIn: 'root' })
 export class StarFactory extends CelestialFactory<StarConfig, Star> {
+  private readonly textureService = inject(AssetTextureService);
+  private readonly planetFactory = inject(PlanetFactory);
+  private readonly cometFactory = inject(CometFactory);
+  private readonly moonFactory = inject(MoonFactory);
 
-  private _keplerianRings = new Set<THREE.InstancedMesh | THREE.Mesh>();
+  private readonly _animatedRings = new Set<RingMesh>();
 
-  public get keplerianRings() {
-    return this._keplerianRings;
+  /** Ring meshes that rotate or animate each frame. */
+  get keplerianRings(): ReadonlySet<RingMesh> {
+    return this._animatedRings;
   }
 
-  constructor(
-    private textureService: AssetTextureService,
-    private planetFactory: PlanetFactory,
-    private cometFactory: CometFactory,
-    private moonFactory: MoonFactory
-  ) {
-    super();
+  /** Forget all rings (call when a solar system is torn down). */
+  clearRings(): void {
+    this._animatedRings.clear();
   }
 
   async build(config: StarConfig): Promise<Star> {
-    const textures = await this.textureService.loadMultipleTextures([config.map || '']);
+    const [map] = await this.textureService.loadMultipleTextures([config.map]);
     const star = new Star(config);
 
-    const sunMaterial = new THREE.MeshPhongMaterial({
-      color: 0xffeecc,
-      map: textures[0]?.image ? textures[0] : undefined,
-      emissive: 0xffaa00,
-      emissiveIntensity: 0.9,
-      shininess: 0
-    });
-
-    let visualRadius = (config.diameter || 10) * SIMULATION_CONSTANTS.VISUAL_SCALE / 2;
-
-    if ((config.diameter || 1) < 10) {
-      visualRadius = 10;
-    }
-
+    const visualRadius = visualRadiusFor(config.diameter || 10, STAR_MIN_VISUAL_RADIUS);
     star.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(visualRadius, config.widthSegments || 128, config.heightSegments || 128),
-      sunMaterial
+      new THREE.MeshPhongMaterial({
+        color: new THREE.Color(hasImage(map) ? 0xffeecc : config.color || 0xffeecc),
+        map: hasImage(map) ? map : null,
+        emissive: new THREE.Color(config.color || 0xffaa00),
+        emissiveIntensity: 0.9,
+        shininess: 0,
+      }),
     );
     star.mesh.name = config.name || 'Sun';
     star.group.add(star.mesh);
 
-    star.highlight = new THREE.Mesh(
-      new THREE.SphereGeometry(visualRadius * 1.18, 64, 64),
-      new THREE.MeshBasicMaterial({
-        color: 0xffdd44,
-        transparent: true,
-        opacity: 0.55,
-        side: THREE.BackSide,
-        depthWrite: false,
-      }),
-    );
-    star.highlight.visible = false;
+    star.highlight = this.createHighlight(visualRadius * 1.18, 0xffdd44, 0.55, 48);
     star.group.add(star.highlight);
 
     const sunLight = new THREE.PointLight(0xffffff, 4.0, 0, 2);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(2048, 2048);
     star.group.add(sunLight);
     star.lights.push(sunLight);
 
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.set(2048, 2048);
-
-    const extraAmbient = new THREE.AmbientLight(0xaaaaaa, 0.6);
-    star.group.add(extraAmbient);
+    const ambient = new THREE.AmbientLight(0xaaaaaa, 0.6);
+    star.group.add(ambient);
+    star.lights.push(ambient);
 
     star.applyInitialTilt();
 
-    const latLong = this.createLatLongLines(visualRadius);
-    star.mesh.add(latLong);
-    star.latLongGroup = latLong;
-
-    if ((config as any).magneticField) {
-
-    }
+    star.latLongGroup = this.createLatLongLines(visualRadius);
+    star.mesh.add(star.latLongGroup);
+    this.createMagneticField(star, star.group);
 
     return star;
   }
 
-  async attachSatellites(star: Star, satelliteConfigs: PlanetConfig[] | CometConfig[]): Promise<void> {
-    for (const satConfig of satelliteConfigs) {
-      if (satConfig.name?.toLowerCase() === 'sun') continue;
-
-      if (satConfig.name?.toLowerCase() === 'halley' || satConfig.name?.toLowerCase() === 'hale-bopp') {
-        const comet = await this.cometFactory.build(satConfig);
-        star.addSatellite(comet);
-      } else {
-
-        const planet = await this.planetFactory.build(satConfig);
-        star.addSatellite(planet);
-
-        if (Array.isArray((satConfig as any).moons) && (satConfig as any).moons.length > 0) {
-          for (const moonConfig of (satConfig as any).moons) {
-            const moon = await this.moonFactory.build(moonConfig);
-            planet.addSatellite(moon);
-          }
+  /** Build planets (with their moons) and comets and attach them to the star. */
+  async attachSatellites(star: Star, satelliteConfigs: readonly SatelliteConfig[]): Promise<void> {
+    for (const config of satelliteConfigs) {
+      if (!config?.name || (config.type as string) === 'star') continue;
+      try {
+        if (config.type === 'comet') {
+          star.addSatellite(await this.cometFactory.build(config));
+          continue;
         }
+        const planet = await this.planetFactory.build(config as PlanetConfig);
+        star.addSatellite(planet);
+        for (const moonConfig of Array.isArray(config.moons) ? config.moons : []) {
+          planet.addSatellite(await this.moonFactory.build(moonConfig));
+        }
+      } catch (err) {
+        console.warn(`[StarFactory] Skipping "${config.name}":`, err);
       }
     }
   }
 
-  async attachRings(star: Star, ringConfigs: RingConfig[]): Promise<void> {
-    this.buildRings(star, ringConfigs);
-  }
-
-  private async buildRings(star: Star, starRings: RingConfig[]): Promise<void> {
-
-    if (star.ringGroup === undefined) {
+  /** Build the star's belts and every planet's rings. */
+  async attachRings(star: Star, ringConfigs: readonly RingConfig[]): Promise<void> {
+    if (!star.ringGroup) {
       star.ringGroup = new THREE.Group();
-      star.ringGroup.name = `${star.config.name}_ring_group`;
-
+      star.ringGroup.name = `${star.name}_rings`;
       star.group.add(star.ringGroup);
     }
 
-    for (const ring of starRings) {
+    for (const ring of ringConfigs) {
       if (!ring?.name) continue;
       const inner = Math.max(0.1, ring.inner ?? 0);
-      const outer = Math.max(inner + 1, ring.outer ?? (inner + 100));
-
-      const tiltDeg = (ring as any).tilt ?? 0;
-
-      const keplerian = (ring as any).keplerianRotation === true;
+      const outer = Math.max(inner + 1, ring.outer ?? inner + 100);
+      const keplerian = ring.keplerianRotation === true;
 
       if ((ring.particleCount ?? 0) > 0) {
         const zones = keplerian ? 3 : 1;
         const zoneCount = Math.ceil(ring.particleCount! / zones);
         const width = (outer - inner) / zones;
         for (let z = 0; z < zones; z++) {
-          await this.buildParticleRingMesh(
-            inner + z * width,
-            inner + (z + 1) * width,
-            zoneCount,
-            tiltDeg,
-            star.axis,
-            ring.thickness ?? 0.4,
-            ring.color ?? '#b0a090',
-            ring.texture,
+          await this.buildParticleRing({
+            inner: inner + z * width,
+            outer: inner + (z + 1) * width,
+            count: zoneCount,
+            tiltDeg: ring.tilt ?? 0,
+            axis: star.axis,
+            thickness: ring.thickness ?? 0.4,
+            color: ring.color ?? '#b0a090',
+            textureUrl: ring.texture,
             keplerian,
-            star.ringGroup,
-            undefined,
-            ring.particleSize,
-          );
+            parent: star.ringGroup,
+            particleSize: ring.particleSize,
+            name: zones > 1 ? `ring_${ring.name}_zone${z + 1}` : `ring_${ring.name}`,
+            ownerName: star.name,
+          });
         }
       } else {
         const mesh = this.buildWasher(inner, outer, star.axis, ring.color ?? '#b0a090', ring.texture);
         mesh.name = `ring_${ring.name}_washer`;
+        mesh.userData = { ...mesh.userData, ringName: ring.name, ownerName: star.name };
         star.ringGroup.add(mesh);
       }
     }
 
-    for (const planet of star.satellites) {
-      const pCfg = planet.config as any;
-      const rings: RingConfig[] = Array.isArray(pCfg.rings) ? pCfg.rings : [];
-      if (rings.length === 0) continue;
+    for (const body of star.satellites) await this.attachPlanetRings(body);
+  }
 
-      const visualDiameter = (pCfg.diameter ?? 2) * SIMULATION_CONSTANTS.VISUAL_SCALE;
+  private async attachPlanetRings(planet: CelestialBody): Promise<void> {
+    const cfg = planet.config as PlanetConfig;
+    const rings = Array.isArray(cfg.rings) ? cfg.rings : [];
+    if (rings.length === 0 || !('orbitalGroup' in planet)) return;
 
-      const orbGroup = (planet as any).orbitalGroup as THREE.Group;
+    const orbitalGroup = (planet as CelestialBody & { orbitalGroup: THREE.Group }).orbitalGroup;
+    if (!planet.ringGroup) {
+      planet.ringGroup = new THREE.Group();
+      planet.ringGroup.name = `${planet.name}_rings`;
+      orbitalGroup.add(planet.ringGroup);
+    }
+    const visualDiameter = (cfg.diameter ?? 2) * SIMULATION_CONSTANTS.VISUAL_SCALE;
 
-      if (planet.ringGroup === undefined) {
-        planet.ringGroup = new THREE.Group();
-        planet.ringGroup.name = `${planet.config.name}_ring_group`;
-
-        orbGroup.add(planet.ringGroup);
-      }
-
-      for (const ring of rings) {
-        if (!ring?.name) continue;
-
-        const minSafeRadius = visualDiameter * 0.55;
-        let localInner = ring.inner ?? 0;
-        let localOuter = ring.outer ?? 0;
-
-        if (localInner <= minSafeRadius || localOuter <= localInner) {
-          localInner = visualDiameter * 1.15;
-          localOuter = visualDiameter * 2.2;
-          console.warn(`[WebGl] Ring "${ring.name}" radii adjusted to visual scale: [${localInner.toFixed(1)}, ${localOuter.toFixed(1)}]`);
-        }
-
-        const tiltDeg = (ring as any).tilt ?? 0;
-        const ringSpeed = ((ring as any).rotationSpeed ?? 0.005) / 1000;
-
-        if ((ring.particleCount ?? 0) > 0) {
-          await this.buildParticleRingMesh(
-            localInner,
-            localOuter,
-            ring.particleCount!,
-            tiltDeg,
-            star.axis,
-            ring.thickness ?? 0.02,
-            ring.color ?? '#e8d8b0',
-            ring.texture,
-            false,
-            planet.ringGroup,
-            ringSpeed,
-            ring.particleSize,
-          );
-        } else {
-          const washer = this.buildWasher(localInner, localOuter, star.axis, ring.color ?? '#e8d8b0', ring.texture, ringSpeed);
-          washer.name = `ring_${ring.name}_washer`;
-          planet.ringGroup.add(washer);
-        }
-
-        console.log(`[WebGl] Ring "${ring.name}" built: local r=[${localInner.toFixed(1)}, ${localOuter.toFixed(1)}]`);
+    for (const ring of rings) {
+      if (!ring?.name) continue;
+      const [inner, outer] = safePlanetRingRadii(ring.inner, ring.outer, visualDiameter);
+      const angularSpeed = (ring.rotationSpeed ?? 0.005) / 1000;
+      // Rings lie in the planet's equatorial plane, so orient them by the
+      // planet's own axis (previously the star's axis was used by mistake).
+      if ((ring.particleCount ?? 0) > 0) {
+        await this.buildParticleRing({
+          inner, outer, count: ring.particleCount!, tiltDeg: ring.tilt ?? 0, axis: planet.axis,
+          thickness: ring.thickness ?? 0.02, color: ring.color ?? '#e8d8b0', textureUrl: ring.texture,
+          keplerian: false, parent: planet.ringGroup, angularSpeedRadPerMs: angularSpeed, particleSize: ring.particleSize,
+          name: `ring_${ring.name}`, ownerName: planet.name,
+        });
+      } else {
+        const washer = this.buildWasher(inner, outer, planet.axis, ring.color ?? '#e8d8b0', ring.texture, angularSpeed);
+        washer.name = `ring_${ring.name}_washer`;
+        washer.userData = { ...washer.userData, ringName: ring.name, ownerName: planet.name };
+        planet.ringGroup.add(washer);
       }
     }
   }
 
-  private async buildParticleRingMesh(
-    inner: number,
-    outer: number,
-    count: number,
-    tiltDeg: number,
-    axis: THREE.Vector3,
-    thickness: number,
-    color: string,
-    textureUrl: string | undefined,
-    keplerian: boolean,
-    parentGroup: THREE.Group | THREE.Scene,
-    angularSpeedRadPerMs?: number,
-    particleSizeOverride?: number,
-  ): Promise<void> {
+  private async buildParticleRing(o: ParticleRingOptions): Promise<RingMesh | null> {
+    const texture = o.textureUrl ? await this.textureService.load(o.textureUrl) : null;
+    const hasTexture = hasImage(texture);
 
-    let texture: THREE.Texture | undefined;
-    if (textureUrl) {
-      const tex = await this.textureService.loadMultipleTextures([textureUrl]);
-      if (tex[0]?.image) texture = tex[0];
-    }
-    const hasTexture = !!texture;
-
-    const vertexShader = `
+    // ShaderMaterial already declares position/normal/uv/instanceMatrix.
+    const vertexShader = /* glsl */ `
       uniform float uTime;
       uniform float uVibrationTime;
       uniform float uVibrationStrength;
       uniform float uOuterRadius;
-      varying vec3 vPosition;
       ${hasTexture ? 'varying vec2 vUv;' : ''}
-      ${hasTexture ? 'attribute vec2 uv;' : ''}
 
-      float hash(vec3 p) {
-        return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-      }
-
+      float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
       vec3 randomVector(vec3 p) {
-        return vec3(
-          hash(p + vec3(0.0)),
-          hash(p + vec3(1.0, 0.0, 0.0)),
-          hash(p + vec3(2.0, 0.0, 0.0))
-        ) * 2.0 - 1.0;
+        return vec3(hash(p), hash(p + vec3(1.0, 0.0, 0.0)), hash(p + vec3(2.0, 0.0, 0.0))) * 2.0 - 1.0;
       }
 
       void main() {
         vec3 pos = position;
         vec3 noisePos = pos * 0.5;
         float t = uTime * 1.5;
-
-        // Base noise
         vec3 offset = randomVector(floor(noisePos * 10.0)) * 0.4;
         offset += sin(noisePos * 5.0 + t) * 0.1;
         offset += cos(noisePos.yzx * 3.0 - t * 1.3) * 0.1;
@@ -274,40 +258,21 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
         float ringRadius = length(instancePos);
         float angle = atan(instancePos.z, instancePos.x);
 
-        // ── RING WAVE (fluid channel) ──
-        float waveChannel = sin(angle * 8.0 + uTime * 25.0) * 0.15 * (ringRadius / uOuterRadius);
-        pos += normal * waveChannel;
-
-        // ── UNDULATION (outer breathing) ──
+        pos += normal * (sin(angle * 8.0 + uTime * 25.0) * 0.15 * (ringRadius / uOuterRadius));
         float undulation = sin(angle * 3.0 + uTime * 8.0) * 0.3 * (1.0 - ringRadius / uOuterRadius);
         pos.x += undulation * cos(angle);
         pos.z += undulation * sin(angle);
+        pos += normal * (sin(angle * 12.0 + uVibrationTime * 35.0) * uVibrationStrength * (ringRadius / uOuterRadius) * 0.6);
 
-        // Original vibration (kept for compatibility)
-        float wave = sin(angle * 12.0 + uVibrationTime * 35.0) * uVibrationStrength;
-        float outerBias = ringRadius / uOuterRadius;
-        pos += normal * (wave * outerBias * 0.6);
-
-        vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
-        vPosition = (modelMatrix * vec4(pos, 1.0)).xyz;
         ${hasTexture ? 'vUv = uv;' : ''}
-        gl_Position = projectionMatrix * mvPosition;
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
       }
     `;
-
-    const fragmentShader = `
+    const fragmentShader = /* glsl */ `
       uniform vec3 uColor;
-      ${hasTexture ? `
-        uniform sampler2D uTexture;
-        varying vec2 vUv;
-      ` : ''}
+      ${hasTexture ? 'uniform sampler2D uTexture; varying vec2 vUv;' : ''}
       void main() {
-        ${hasTexture ? `
-          vec4 texColor = texture2D(uTexture, vUv);
-          gl_FragColor = texColor * vec4(uColor, 0.9);
-        ` : `
-          gl_FragColor = vec4(uColor, 0.9);
-        `}
+        ${hasTexture ? 'gl_FragColor = texture2D(uTexture, vUv) * vec4(uColor, 0.9);' : 'gl_FragColor = vec4(uColor, 0.9);'}
       }
     `;
 
@@ -316,157 +281,91 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
       fragmentShader,
       uniforms: {
         uTime: { value: 0 },
-        uColor: { value: new THREE.Color(color) },
+        uColor: { value: new THREE.Color(o.color) },
         uVibrationTime: { value: 0 },
         uVibrationStrength: { value: 0 },
-        uOuterRadius: { value: outer },
-        ...(hasTexture && { uTexture: { value: texture } }),
+        uOuterRadius: { value: o.outer },
+        ...(hasTexture ? { uTexture: { value: texture } } : {}),
       },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
 
-    const tiltRad = (tiltDeg * Math.PI) / 180;
+    const tiltRad = (o.tiltDeg * Math.PI) / 180;
     const cosT = Math.cos(tiltRad);
     const sinT = Math.sin(tiltRad);
+    const span = o.outer - o.inner;
 
-    const positions: THREE.Vector3[] = [];
-    const scales: number[] = [];
-    const attempts = count * 3;
+    const count = Math.max(0, Math.floor(o.count));
+    if (count === 0) return null;
 
-    for (let i = 0; i < attempts && positions.length < count; i++) {
-      const angle = Math.random() * 2 * Math.PI;
-
-      const u = Math.random();
-      const r = inner + Math.sqrt(u) * (outer - inner);
-
-      const rj = r + (Math.random() - 0.5) * (outer - inner) * 0.04;
-
-      let zOffset: number;
-
-      if (keplerian) {
-        const g = (Math.random() + Math.random() - 1);
-        zOffset = g * thickness * rj * 0.3;
-      } else {
-        zOffset = Math.sin(angle * 6) * thickness * rj * 0.12;
-      }
-
-      const x = rj * Math.cos(angle);
-      const z = rj * Math.sin(angle);
-      const y = zOffset;
-
-      const finalX = x;
-      const finalY = y * cosT - z * sinT;
-      const finalZ = y * sinT + z * cosT;
-
-      positions.push(new THREE.Vector3(finalX, finalY, finalZ));
-
-      scales.push(0.4 + Math.random() * 1.8);
-    }
-
-    if (positions.length === 0) {
-      return;
-    }
-
-    let particleRadius: number;
-
-    if (particleSizeOverride) {
-      particleRadius = particleSizeOverride;
-    } else if (keplerian) {
-      particleRadius = Math.min(12, (outer - inner) * 0.008);
-    } else {
-      particleRadius = Math.min(4, (outer - inner) * 0.004);
-    }
-
+    let particleRadius = o.particleSize || (o.keplerian ? Math.min(12, span * 0.008) : Math.min(4, span * 0.004));
     particleRadius = Math.max(0.2, particleRadius);
 
-    const geometry = new THREE.SphereGeometry(Math.max(0.05, particleRadius), 5, 5);
-    geometry.computeVertexNormals();
-
-    const instancedMesh = new THREE.InstancedMesh(geometry, material, positions.length);
-
-    const ringNormal = new THREE.Vector3(1, 0, 0);
-    const targetAxis = axis.clone().normalize();
-
-    const tiltQuat = new THREE.Quaternion()
-      .setFromUnitVectors(ringNormal, targetAxis);
-
-    instancedMesh.quaternion.copy(tiltQuat);
-
-    instancedMesh.castShadow = false;
-    instancedMesh.receiveShadow = false;
+    const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(particleRadius, 5, 5), material, count);
+    mesh.name = o.name;
+    mesh.quaternion.copy(ringOrientation(o.axis));
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
 
     const dummy = new THREE.Object3D();
-    for (let i = 0; i < positions.length; i++) {
-      dummy.position.copy(positions[i]);
-      dummy.scale.set(scales[i], scales[i], scales[i]);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * 2 * Math.PI;
+      const r = o.inner + Math.sqrt(Math.random()) * span;
+      const rj = r + (Math.random() - 0.5) * span * 0.04;
+      const y = o.keplerian
+        ? (Math.random() + Math.random() - 1) * o.thickness * rj * 0.3
+        : Math.sin(angle * 6) * o.thickness * rj * 0.12;
+      const x = rj * Math.cos(angle);
+      const z = rj * Math.sin(angle);
+      dummy.position.set(x, y * cosT - z * sinT, y * sinT + z * cosT);
+      dummy.scale.setScalar(0.4 + Math.random() * 1.8);
       dummy.updateMatrix();
-      instancedMesh.setMatrixAt(i, dummy.matrix);
+      mesh.setMatrixAt(i, dummy.matrix);
     }
-    instancedMesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
 
-    parentGroup.add(instancedMesh);
+    const speed = o.keplerian ? keplerianAngularSpeed((o.inner + o.outer) / 2) : (o.angularSpeedRadPerMs ?? 0);
+    mesh.userData = { rotate: speed > 0, angularSpeedRadPerMs: speed, ringName: o.name.replace(/^ring_/, ''), ownerName: o.ownerName };
+    const ringMesh = mesh as RingMesh;
+    this._animatedRings.add(ringMesh); // always tracked so shader time uniforms advance
 
-    if (keplerian) {
-      const avgRadiusAU = ((inner + outer) / 2) / SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
-      const periodYears = Math.sqrt(Math.pow(avgRadiusAU, 3));
-      const periodMs = periodYears * 365.25 * 24 * 3600 * 1000;
-      const speed = (2 * Math.PI) / periodMs;
-      instancedMesh.userData = { rotate: true, angularSpeedRadPerMs: speed, currentAngle: 0 };
-      this._keplerianRings.add(instancedMesh);
-    } else if (angularSpeedRadPerMs && angularSpeedRadPerMs > 0) {
-      instancedMesh.userData = { rotate: true, angularSpeedRadPerMs, currentAngle: 0 };
-      this._keplerianRings.add(instancedMesh);
-    }
+    o.parent.add(mesh);
+    return ringMesh;
   }
 
-  private buildWasher(
-    inner: number, outer: number, axis: THREE.Vector3, color: string,
-    texture?: string, angularSpeedRadPerMs?: number,
-  ): THREE.Mesh {
+  private buildWasher(inner: number, outer: number, axis: THREE.Vector3, color: string, texture?: string, angularSpeedRadPerMs?: number): RingMesh {
     const safeInner = Math.max(0.1, inner);
     const safeOuter = Math.max(safeInner + 0.1, outer);
 
     const geom = new THREE.RingGeometry(safeInner, safeOuter, 128);
-    const pos = geom.attributes['position'] as THREE.BufferAttribute;
-    const uvAttr = geom.attributes['uv'] as THREE.BufferAttribute;
+    const pos = geom.getAttribute('position') as THREE.BufferAttribute;
+    const uv = geom.getAttribute('uv') as THREE.BufferAttribute;
     for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), y = pos.getY(i);
-      const r = Math.sqrt(x * x + y * y);
-      uvAttr.setXY(i, (r - safeInner) / (safeOuter - safeInner), (Math.atan2(y, x) / (2 * Math.PI) + 1) % 1);
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      uv.setXY(i, (Math.hypot(x, y) - safeInner) / (safeOuter - safeInner), (Math.atan2(y, x) / (2 * Math.PI) + 1) % 1);
     }
-    uvAttr.needsUpdate = true;
-    geom.computeVertexNormals();
+    uv.needsUpdate = true;
+    // RingGeometry is built in the XY plane; lay it flat in the equatorial XZ plane.
+    geom.rotateX(-Math.PI / 2);
 
-    const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(color),
-      side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthWrite: false,
-    });
-
+    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color), side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthWrite: false });
     if (texture?.trim()) {
-      this.textureService.loadMultipleTextures([texture]).then(([t]) => {
-        if (t.image && mat.map !== t) { t.colorSpace = THREE.SRGBColorSpace; mat.map = t; mat.needsUpdate = true; }
+      void this.textureService.load(texture).then((t) => {
+        if (hasImage(t)) { mat.map = t; mat.needsUpdate = true; }
       });
     }
 
-    const mesh = new THREE.Mesh(geom, mat);
-
-    const ringNormal = new THREE.Vector3(1, 0, 0);
-    const targetAxis = axis.clone().normalize();
-
-    const tiltQuat = new THREE.Quaternion()
-      .setFromUnitVectors(ringNormal, targetAxis);
-
-    mesh.quaternion.copy(tiltQuat);
-
+    const mesh = new THREE.Mesh(geom, mat) as RingMesh;
+    mesh.quaternion.copy(ringOrientation(axis));
     mesh.renderOrder = 5;
-
     if (angularSpeedRadPerMs && angularSpeedRadPerMs > 0) {
-      mesh.userData = { rotate: true, angularSpeedRadPerMs, currentAngle: 0 };
-      this._keplerianRings.add(mesh as any);
+      mesh.userData = { rotate: true, angularSpeedRadPerMs };
+      this._animatedRings.add(mesh);
     }
     return mesh;
   }
-
 }

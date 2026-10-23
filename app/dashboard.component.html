@@ -1,0 +1,244 @@
+<!-- ── Loading overlay ───────────────────────────────────────────────────── -->
+@if (isLoading()) {
+  <div class="loader-overlay" [class.fade-out]="fadingOut()" role="status" aria-live="polite">
+    <div class="loader-card">
+      <div class="loader-orrery" aria-hidden="true">
+        <div class="loader-star-core"></div>
+        <div class="orbit-track orbit-track-1"></div>
+        <div class="orbit-track orbit-track-2"></div>
+        <div class="orbit-track orbit-track-3"></div>
+        <div class="orbit-arm orbit-arm-1"><div class="orbit-planet orbit-planet-1"></div></div>
+        <div class="orbit-arm orbit-arm-2"><div class="orbit-planet orbit-planet-2"></div></div>
+        <div class="orbit-arm orbit-arm-3"><div class="orbit-planet orbit-planet-3"></div></div>
+      </div>
+      <div>
+        <div class="loader-label">Initialising Heliosphere</div>
+        <div class="loader-stage">{{ webGl.loadingStage() }}</div>
+      </div>
+      <div class="loader-bar-wrap"><div class="loader-bar-fill"></div></div>
+    </div>
+  </div>
+}
+
+<div id="content" #content (click)="onContentClick($event)" (mousedown)="onCanvasMouseDown($event)">
+
+  <span class="hud-hint">
+    @if (webGl.navRoute.active) {
+      🛸 ROUTE ACTIVE — ESC to disengage · Mouse to look around
+    } @else if (webGl.controls?.locked) {
+      🚀 FLIGHT — ESC/Space exit · WASD move · R/F up/down · Shift=10× · Mouse look
+    } @else {
+      Click viewport or Space to enter flight mode
+    }
+  </span>
+
+  <!-- Camera diagnostics -->
+  <div class="info-panel camera-info">
+    <div>📍 POS: {{ cameraPos.x | number:'1.0-0' }}, {{ cameraPos.y | number:'1.0-0' }}, {{ cameraPos.z | number:'1.0-0' }}</div>
+    <div>🔆 DIR: {{ cameraDir.x | number:'1.2-2' }}, {{ cameraDir.y | number:'1.2-2' }}, {{ cameraDir.z | number:'1.2-2' }}</div>
+    <div>⚡ SPD: {{ cameraSpeed | number:'1.0-0' }} u/s</div>
+  </div>
+
+  <!-- Simulation date -->
+  <div class="info-panel date-info">
+    <div>📅 SIM DATE: {{ simulationDate | date:'yyyy-MM-dd HH:mm:ss' }}</div>
+    <div>⏳ ΔT = {{ dateOffsetDays | number:'1.2-2' }} days</div>
+    <div>⏩ SIM SPEED: {{ formatSpeed(simSpeed()) }}</div>
+    <div class="latency-gauge">
+      <span>🕒 Last update:</span>
+      <span class="latency-value">{{ latencyMs | number:'1.0-0' }} ms</span>
+      <div class="latency-bar"
+           [style.width.%]="(latencyMs > maxLatencyMs ? 1 : latencyMs / maxLatencyMs) * 100"
+           [style.background]="latencyMs < 100 ? '#4caf50' : (latencyMs < 300 ? '#ff9800' : '#f44336')"></div>
+    </div>
+    @if (webGl.verifyMode) {
+      <div class="verify-readout">🔭 Max client/server Δ: {{ webGl.maxVerificationError() | number:'1.3-3' }} u</div>
+    }
+  </div>
+
+  @if (selectedNames().size > 0) {
+    <div class="selection-bar">✦ {{ selectionHierarchyDisplay() }}</div>
+  }
+
+  <!-- Navigation mode bar -->
+  <div class="nav-mode-bar" role="toolbar" aria-label="Navigation mode">
+    <button class="nav-btn" [class.active]="webGl.navMode === NavMode.DISCOVERY" [attr.aria-pressed]="webGl.navMode === NavMode.DISCOVERY"
+            title="Top-down discovery — see all orbits" (click)="setNavMode(NavMode.DISCOVERY)">
+      <span class="mode-icon">🔭</span> Discovery
+    </button>
+    <button class="nav-btn" [class.active]="webGl.navMode === NavMode.CINEMATIC" [attr.aria-pressed]="webGl.navMode === NavMode.CINEMATIC"
+            title="Cinematic — geostationary orbital follow" (click)="setNavMode(NavMode.CINEMATIC)">
+      <span class="mode-icon">🎬</span> Cinematic
+    </button>
+    <button class="nav-btn" [class.active]="webGl.navMode === NavMode.FASTEST_TRAVEL" [attr.aria-pressed]="webGl.navMode === NavMode.FASTEST_TRAVEL"
+            title="Navigation — plan and fly custom routes" (click)="setNavMode(NavMode.FASTEST_TRAVEL)">
+      <span class="mode-icon">🧭</span> Navigate
+    </button>
+  </div>
+
+  <!-- Date selector + milestones -->
+  <div class="date-panel">
+    <label class="panel-title" for="dateSelector">📅 JUMP TO DATE</label>
+    <input id="dateSelector" #dateSelector type="datetime-local" [value]="selectedDateStr">
+    <button class="jump-btn" type="button" (click)="jumpToDate()">🚀 Jump to Date</button>
+
+    <div class="milestones-title">Mile Markers (centuries + comets)</div>
+    @for (m of milestones; track m.name) {
+      <button type="button" class="milestone" (click)="jumpToMilestone(m.dateMs)">
+        {{ m.name }} <small>{{ m.dateMs | date:'yyyy':'UTC' }}</small>
+        <div class="desc">{{ m.desc }}</div>
+      </button>
+    }
+  </div>
+
+  @if (showHelpPanel()) {
+    <div class="help-panel">
+      <div class="panel-title">
+        <span>🔭 Teach me what to do next</span>
+        <button type="button" class="close" aria-label="Close help" (click)="showHelpPanel.set(false)">✕</button>
+      </div>
+      @for (link of helpLinks; track link.url) {
+        <button type="button" class="help-link" (click)="openExternalLink(link.url)">{{ link.label }}</button>
+      }
+      @if (isSimulationDatePast(1974)) {
+        <button type="button" class="help-link" (click)="openExternalLink('https://dl.acm.org/doi/10.1145/361011.361061')">ACM: The UNIX Time-Sharing System</button>
+      }
+      @if (isSimulationDatePast(2050)) {
+        <div class="future-unlocked">🌟 Future unlocked: 2061 Halley tracking</div>
+      }
+    </div>
+  }
+
+  <!-- Speed sliders -->
+  <div class="sliders-panel">
+    <div class="slider-container">
+      <label class="slider-label" for="simSpeed">🕰 SIM TIME</label>
+      <input id="simSpeed" type="range" class="vertical" min="0" max="100" step="0.01"
+             [value]="simSpeedSlider()" (input)="onSimSpeedSlider($event)" aria-label="Simulation speed">
+      <div class="speed-value">{{ formatSpeed(simSpeed()) }}</div>
+    </div>
+    <div class="slider-container">
+      <label class="slider-label" for="camSpeed">⚡ SPEED</label>
+      <input id="camSpeed" type="range" class="vertical" min="0" max="100" step="0.1"
+             [value]="camSpeedSlider()" (input)="onCamSpeedSlider($event)" aria-label="Camera speed">
+      <div class="speed-value">{{ camBaseSpeed() | number:'1.0-0' }} u/s</div>
+    </div>
+  </div>
+
+  <!-- Toggles -->
+  <div class="orbit-controls">
+    <button type="button" (click)="resetSimulation()" title="Reset simulation to current real time">🔄 Reset Time</button>
+    <button type="button" [class.active]="webGl.showPlanetOrbits" (click)="webGl.toggleShowPlanetOrbits()">🌍 Planets</button>
+    <button type="button" [class.active]="webGl.showMoonOrbits" (click)="webGl.toggleShowMoonOrbits()">🌙 Moons</button>
+    <button type="button" [class.active]="webGl.showCometOrbits" (click)="webGl.toggleShowCometOrbits()">☄️ Comets</button>
+    <button type="button" [class.active]="webGl.graphMode" (click)="webGl.toggleGraphMode()">
+      🔲 Graph <span class="status-badge" [class.on]="webGl.graphMode">{{ webGl.graphMode ? 'ON' : 'OFF' }}</span>
+    </button>
+    <button type="button" [class.active]="webGl.spectroscopyMode" (click)="webGl.toggleSpectroscopyMode()">
+      📡 Spectroscopy <span class="status-badge" [class.on]="webGl.spectroscopyMode">{{ webGl.spectroscopyMode ? 'ON' : 'OFF' }}</span>
+    </button>
+    <button type="button" [class.active]="webGl.showCoordinateGrids" (click)="webGl.toggleShowCoordinateGrids()">
+      🌐 Coordinates Grid <span class="status-badge" [class.on]="webGl.showCoordinateGrids">{{ webGl.showCoordinateGrids ? 'ON' : 'OFF' }}</span>
+    </button>
+    <button type="button" [class.active]="webGl.showMagneticFields" (click)="webGl.toggleShowMagneticFields()">
+      🧲 Fields <span class="status-badge" [class.on]="webGl.showMagneticFields">{{ webGl.showMagneticFields ? 'ON' : 'OFF' }}</span>
+    </button>
+    <button type="button" [class.active]="webGl.verifyMode" (click)="webGl.toggleVerifyMode()">
+      🔭 Verify <span class="status-badge" [class.on]="webGl.verifyMode">{{ webGl.verifyMode ? 'ON' : 'OFF' }}</span>
+    </button>
+    <button type="button" (click)="jumpToRandomStar()" title="Travel to a random new star system">🚀 Jump</button>
+    <button type="button" (click)="toggleMenu()" title="Toggle menu">🟰 Menu</button>
+  </div>
+
+  <!-- Body list -->
+  <div class="planet-panel">
+    <div class="planet-label">🪐 Celestial Bodies</div>
+    <div class="planet-multiselect-hint">
+      {{ webGl.navMode === NavMode.FASTEST_TRAVEL ? '🧭 Click to add waypoint' : 'Ctrl+click → multi-select · camera reframes' }}
+    </div>
+    @for (planet of planets(); track planet.name) {
+      <div class="planet-card" role="button" tabindex="0"
+           [class.selected]="selectedNames().has(planet.name) && webGl.navMode !== NavMode.FASTEST_TRAVEL"
+           [class.waypoint]="isWaypoint(planet.name)"
+           [style.border-left-color]="planet.config.color || '#4488ff'"
+           (click)="onPlanetCardClick(planet, $event)"
+           (keydown.enter)="onPlanetCardClick(planet, $any($event))">
+        <div>
+          <div class="planet-name">{{ planet.name }}</div>
+          <div class="planet-meta">{{ auOf(planet) | number:'1.2-2' }} AU</div>
+        </div>
+        <canvas #indicator [attr.data-planet]="planet.name" class="indicator-canvas" width="24" height="24"></canvas>
+      </div>
+    } @empty {
+      <div class="planet-multiselect-hint">No bodies loaded yet.</div>
+    }
+  </div>
+
+  <!-- Navigation route panel -->
+  @if (webGl.navMode === NavMode.FASTEST_TRAVEL) {
+    <div class="nav-panel">
+      <div class="nav-panel-title">
+        <span>🧭 Navigation Route</span>
+        <span style="font-size:0.55rem; opacity:0.5">{{ webGl.navRoute.waypoints.length }} pts</span>
+      </div>
+      <div class="nav-panel-hint">
+        🌍 Click planet panel to add body waypoint<br>
+        🗺 Click minimap to add coordinate waypoint
+      </div>
+
+      <div class="waypoint-list">
+        @for (wp of webGl.navRoute.waypoints; track $index; let i = $index) {
+          <div class="waypoint-item">
+            <span class="waypoint-num">{{ i + 1 }}.</span>
+            <span class="waypoint-label" [title]="wp.label || wp.bodyName || 'Point'">
+              {{ wp.type === 'body' ? '🌍' : '📍' }} {{ wp.label || wp.bodyName }}
+            </span>
+            <input class="waypoint-dur" type="number" min="0" max="3600" [value]="wp.durationSec"
+                   (change)="onWpDurationChange(i, $event)" title="Duration at waypoint (seconds)" aria-label="Duration in seconds">s
+            <button type="button" class="wp-remove" (click)="removeWaypoint(i)" title="Remove waypoint" aria-label="Remove waypoint">✕</button>
+          </div>
+        } @empty {
+          <div class="wp-empty">— no waypoints — add via planet panel or minimap —</div>
+        }
+      </div>
+
+      <div class="nav-actions">
+        <button type="button" class="nav-btn-sm" [class.active]="webGl.navRoute.loop" (click)="toggleNavLoop()"
+                title="Loop route — return to start after last waypoint">🔁 Circuit</button>
+        <button type="button" class="nav-btn-sm" (click)="clearNavWaypoints()" [disabled]="webGl.navRoute.waypoints.length === 0"
+                title="Clear all waypoints">🗑 Clear</button>
+      </div>
+
+      <div class="nav-actions" style="margin-top:6px">
+        @if (!webGl.navRoute.active) {
+          <button type="button" class="nav-btn-sm engage" [disabled]="webGl.navRoute.waypoints.length === 0" (click)="engageRoute()"
+                  title="Engage route — camera flies autonomously">🚀 Engage Route</button>
+        } @else {
+          <button type="button" class="nav-btn-sm disengage" (click)="disengageRoute()"
+                  title="Disengage — stop autonomous flight (also ESC)">⏹ Disengage</button>
+        }
+      </div>
+
+      <div class="nav-status" [class.active]="webGl.navRoute.active">
+        @if (webGl.navRoute.active) {
+          ▶ WP {{ webGl.navRoute.currentIndex + 1 }}/{{ webGl.navRoute.waypoints.length }}
+          @if (webGl.navRoute.orbitRemaining > 0) {
+            · 🛸 orbiting {{ webGl.navRoute.orbitRemaining | number:'1.0-0' }}s
+          }
+        } @else if (webGl.navRoute.waypoints.length > 0) {
+          Ready — {{ webGl.navRoute.waypoints.length }} waypoint{{ webGl.navRoute.waypoints.length > 1 ? 's' : '' }}
+        }
+      </div>
+    </div>
+  }
+
+  <!-- Minimap -->
+  <div class="minimap-wrap">
+    <div class="minimap-label">🌌 {{ webGl.star?.name ?? 'Solar System' }}</div>
+    <canvas #minimap class="minimap" width="200" height="200" (click)="onMinimapClick($event)"
+            role="img" aria-label="Top-down minimap of the star system"></canvas>
+    @if (webGl.navMode === NavMode.FASTEST_TRAVEL) {
+      <div class="minimap-hint">Click to add coordinate waypoint</div>
+    }
+  </div>
+</div>

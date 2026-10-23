@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "Venus",
   "type": "planet",
   "map": "/images/planets/venusmap.png",
@@ -18,5 +18,7 @@
   "tilt": 177.4,
   "spin": -0.00015,
   "eccentricity": 0.0068,
-  "inclination": 3.395
+  "inclination": 3.395,
+  "longitudeOfPerihelion": 131.602467,
+  "M0": 0.879238
 }

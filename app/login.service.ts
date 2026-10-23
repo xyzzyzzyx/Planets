@@ -1,16 +1,16 @@
-﻿import { EventEmitter, Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 
+/** Visibility of the sign-in overlay. */
 @Injectable({ providedIn: 'root' })
 export class LoginService {
-  showing = false;
-  emitter = new EventEmitter<boolean>();
-
-  isShowing(): boolean {
-    return this.showing;
-  }
+  private readonly _showing = signal(false);
+  readonly showing = this._showing.asReadonly();
 
   setShowing(showing: boolean): void {
-    this.showing = showing;
-    this.emitter.emit(showing);
+    this._showing.set(showing);
+  }
+
+  toggle(): void {
+    this._showing.update((s) => !s);
   }
 }

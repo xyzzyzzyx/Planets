@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "Mercury",
   "type": "planet",
   "map": "/images/planets/mercurymap.png",
@@ -7,7 +7,7 @@
   "atmosphere": 0.0075,
   "widthSegments": 32,
   "heightSegments": 32,
-  "mass": 0.330,
+  "mass": 0.33,
   "pow": 24,
   "x": 579,
   "y": 0,
@@ -18,5 +18,7 @@
   "tilt": 0.034,
   "spin": 0.0008,
   "eccentricity": 0.2056,
-  "inclination": 7.005
+  "inclination": 7.005,
+  "longitudeOfPerihelion": 77.457796,
+  "M0": 3.050705
 }

@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "Earth",
   "type": "planet",
   "map": "/images/planets/earthmap1k.png",
@@ -15,13 +15,15 @@
   "x": 1496,
   "y": 0,
   "z": 0,
-  "au": 1.000,
+  "au": 1.0,
   "color": "#4a9eff",
   "period": 365.25,
   "tilt": 23.44,
   "spin": 0.015,
   "eccentricity": 0.0167,
-  "inclination": 0.000,
+  "inclination": 0.0,
+  "longitudeOfPerihelion": 102.937682,
+  "M0": 6.240021,
   "magneticField": {
     "strength": 1.0,
     "radius": 8,

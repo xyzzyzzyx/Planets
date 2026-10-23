@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "Neptune",
   "type": "planet",
   "map": "/images/planets/neptunemap.png",
@@ -19,6 +19,8 @@
   "spin": 0.052,
   "eccentricity": 0.0113,
   "inclination": 1.769,
+  "longitudeOfPerihelion": 44.964762,
+  "M0": 4.536376,
   "moons": [
     {
       "name": "Naiad",
@@ -160,7 +162,7 @@
       "period": 5.877,
       "tilt": 0.01,
       "spin": 5.877,
-      "eccentricity": 0.000016,
+      "eccentricity": 1.6e-05,
       "inclination": 0.01,
       "semiMajorAxis": 3.548
     },
@@ -208,7 +210,7 @@
       "atmosphere": 0,
       "widthSegments": 32,
       "heightSegments": 32,
-      "mass": 0.50,
+      "mass": 0.5,
       "pow": 15,
       "color": "#aab0bb",
       "period": 3171.33,
@@ -240,7 +242,7 @@
       "name": "Neso",
       "type": "moon",
       "map": "/images/moons/nesomap.png",
-      "diameter": 0.00060,
+      "diameter": 0.0006,
       "atmosphere": 0,
       "widthSegments": 32,
       "heightSegments": 32,
@@ -258,7 +260,7 @@
       "name": "Halimede",
       "type": "moon",
       "map": "/images/moons/halimedemap.png",
-      "diameter": 0.00030,
+      "diameter": 0.0003,
       "atmosphere": 0,
       "widthSegments": 32,
       "heightSegments": 32,
@@ -270,7 +272,7 @@
       "spin": 1879.7,
       "eccentricity": 0.571,
       "inclination": 112.7,
-      "semiMajorAxis": 157.30
+      "semiMajorAxis": 157.3
     },
     {
       "name": "S/2021 N1",

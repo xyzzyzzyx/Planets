@@ -1,78 +1,61 @@
 import { Injectable } from '@angular/core';
 import * as THREE from 'three';
-import { AssetTextureService } from '../webgl/asset-texture.service';
 import { CelestialFactory } from './celestial.factory';
-import { CometConfig, SIMULATION_CONSTANTS } from './celestial.model';
+import { CometConfig, visualRadiusFor } from './celestial.model';
 import { Comet } from './comet.model';
 
+export const COMET_MIN_VISUAL_RADIUS = 0.25;
+export const COMET_TAIL_PARTICLES = 1800;
+
+/** Builds a comet: emissive nucleus, highlight and a pre-allocated particle tail buffer. */
 @Injectable({ providedIn: 'root' })
 export class CometFactory extends CelestialFactory<CometConfig, Comet> {
-  constructor(private textureService: AssetTextureService) { super(); }
-
   async build(config: CometConfig): Promise<Comet> {
     const comet = new Comet(config);
-
-    let visualRadius = (config.diameter || 1) * SIMULATION_CONSTANTS.VISUAL_SCALE / 2;
-
-    if ((config.diameter || 1) < .25) {
-      visualRadius = .25;
-    }
-
-    const material = new THREE.MeshPhongMaterial({
-      color: config.color || 0xd4c9a8,
-      emissive: new THREE.Color(0xffeecc),
-      emissiveIntensity: 1.2,
-      shininess: 10,
-    });
+    const visualRadius = visualRadiusFor(config.diameter, COMET_MIN_VISUAL_RADIUS);
 
     comet.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(visualRadius, 24, 24),
-      material
+      new THREE.MeshPhongMaterial({ color: config.color || 0xd4c9a8, emissive: new THREE.Color(0xffeecc), emissiveIntensity: 1.2, shininess: 10 }),
     );
     comet.mesh.castShadow = true;
     comet.mesh.receiveShadow = true;
     comet.mesh.name = config.name || 'Comet';
     comet.orbitalGroup.add(comet.mesh);
 
-
-    comet.highlight = new THREE.Mesh(
-      new THREE.SphereGeometry(visualRadius * 1.3, 24, 24),
-      new THREE.MeshBasicMaterial({ color: 0x44ffcc, transparent: true, opacity: 0.7, side: THREE.BackSide })
-    );
-    comet.highlight.visible = false;
+    comet.highlight = this.createHighlight(visualRadius * 1.3, 0x44ffcc, 0.7, 24);
     comet.orbitalGroup.add(comet.highlight);
 
-    const particleCount = 1800;
-    const positions = new Float32Array(particleCount * 3);
-    const colors = new Float32Array(particleCount * 3);
-    const sizes = new Float32Array(particleCount);
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(COMET_TAIL_PARTICLES * 3), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(COMET_TAIL_PARTICLES * 3), 3));
+    // Note: PointsMaterial ignores a per-vertex `size` attribute (it only reads `size` below);
+    // it is kept so a custom point shader can use it. The draw range hides unused points.
+    geo.setAttribute('size', new THREE.BufferAttribute(new Float32Array(COMET_TAIL_PARTICLES), 1));
+    geo.setDrawRange(0, 0);
 
-    const mat = new THREE.PointsMaterial({
-      size: visualRadius * 1.2,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthTest: false,
-      depthWrite: false,
-    });
+    comet.tailParticles = new THREE.Points(
+      geo,
+      new THREE.PointsMaterial({
+        size: visualRadius * 1.2,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    comet.tailParticles.name = `${comet.name}_tail`;
+    comet.tailParticles.frustumCulled = false;
+    // Trail points are expressed in the comet group's frame (the orbital
+    // group's parent); adding the tail to the moving orbital group would
+    // offset every particle by the comet's position a second time.
+    comet.group.add(comet.tailParticles);
 
-    comet.tailParticles = new THREE.Points(geo, mat);
-    comet.orbitalGroup.add(comet.tailParticles);
-
-    comet.previousPositions = [];
-
-    const latLong = this.createLatLongLines(visualRadius);
-    comet.mesh.add(latLong);
-    comet.latLongGroup = latLong;
-
-    if ((config as any).magneticField) {
-
-    }
+    comet.latLongGroup = this.createLatLongLines(visualRadius);
+    comet.mesh.add(comet.latLongGroup);
+    this.createMagneticField(comet, comet.orbitalGroup);
 
     return comet;
   }

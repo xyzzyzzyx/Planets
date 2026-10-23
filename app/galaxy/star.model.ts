@@ -1,5 +1,6 @@
-﻿import { CelestialBody, CometConfig, RingConfig, StarConfig } from './celestial.model';
+import { CelestialBody, CometConfig, RingConfig, StarConfig } from './celestial.model';
 
+/** Life-cycle stage of a star (informational; the default is main sequence). */
 export enum StarStage {
   NEBULA = 'Nebula (Giant Gas Cloud)',
   PROTOSTAR = 'Protostar',
@@ -9,10 +10,12 @@ export enum StarStage {
   STELLAR_DEATH_AND_REMNANTS = 'Stellar Death and Remnants',
 }
 
+/** Root of a star system: planets and comets are its satellites; belts live in its ring group. */
 export class Star extends CelestialBody {
-  stage: StarStage;
-  rings?: RingConfig[];
-  comets?: CometConfig[];
+  declare readonly config: StarConfig;
+  stage: StarStage | string;
+  rings: RingConfig[];
+  comets: CometConfig[];
   composition?: string;
   heat?: number;
   energy?: number;
@@ -20,12 +23,19 @@ export class Star extends CelestialBody {
 
   constructor(config: StarConfig) {
     super(config);
-    this.stage = config.stage;
+    this.stage = config.stage ?? StarStage.MAIN_SEQUENCE;
     this.composition = config.composition;
     this.heat = config.heat;
     this.energy = config.energy;
     this.radiance = config.radiance;
-    this.rings = config.rings;
-    this.comets = config.comets;
+    this.rings = config.rings ?? [];
+    this.comets = config.comets ?? [];
+  }
+
+  /** Find this star or any descendant by (case-insensitive) name. */
+  findBody(name: string): CelestialBody | null {
+    const lower = name.toLowerCase();
+    for (const body of this.descendants()) if (body.name.toLowerCase() === lower) return body;
+    return null;
   }
 }

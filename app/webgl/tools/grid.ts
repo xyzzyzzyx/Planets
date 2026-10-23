@@ -1,75 +1,45 @@
 import * as THREE from 'three';
 import { SIMULATION_CONSTANTS } from '../../galaxy/celestial.model';
 
+/** 3-D reference lattice (10 AU spacing) toggled by "Graph" mode. */
 export class Grid {
-  private readonly GRID_RES = 32;
-  private readonly GRID_HALF = Math.floor(this.GRID_RES / 2);
-  private readonly GRID_STEP = 10 * SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
+  static readonly RESOLUTION = 32;
+  static readonly STEP = 10 * SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
 
-  private gridPoints: THREE.Vector3[];
-  private gridLines: THREE.LineSegments;
+  readonly lines: THREE.LineSegments;
 
-  constructor(private scene: THREE.Scene) {
-    this.generateGridPoints();
-    this.buildGridLines();
+  constructor(scene: THREE.Object3D) {
+    this.lines = Grid.buildLines();
+    this.lines.visible = false;
+    scene.add(this.lines);
   }
 
-  setVisibile(visible): void {
-    if (this.gridLines) {
-      this.gridLines.visible = visible;
-    }
+  setVisible(visible: boolean): void {
+    this.lines.visible = visible;
   }
 
-  private generateGridPoints(): void {
-    this.gridPoints = [];
-    const step = this.GRID_STEP;
-    const half = this.GRID_HALF * step;
-
-    for (let x = -half; x <= half; x += step) {
-      for (let y = -half; y <= half; y += step) {
-        for (let z = -half; z <= half; z += step) {
-          this.gridPoints.push(new THREE.Vector3(x, y, z));
-        }
-      }
-    }
+  dispose(): void {
+    this.lines.removeFromParent();
+    this.lines.geometry.dispose();
+    (this.lines.material as THREE.Material).dispose();
   }
 
-  private buildGridLines(): void {
+  static buildLines(): THREE.LineSegments {
+    const step = Grid.STEP;
+    const n = Grid.RESOLUTION;
+    const half = Math.floor(n / 2) * step;
     const positions: number[] = [];
-    const step = this.GRID_STEP;
-    const half = this.GRID_HALF * step;
-
-    for (let y = -half; y <= half; y += step) {
-      for (let z = -half; z <= half; z += step) {
-        positions.push(-half, y, z, half, y, z);
+    for (let a = 0; a <= n; a++) {
+      for (let b = 0; b <= n; b++) {
+        const u = -half + a * step;
+        const v = -half + b * step;
+        positions.push(-half, u, v, half, u, v); // along X
+        positions.push(u, -half, v, u, half, v); // along Y
+        positions.push(u, v, -half, u, v, half); // along Z
       }
     }
-    for (let x = -half; x <= half; x += step) {
-      for (let z = -half; z <= half; z += step) {
-        positions.push(x, -half, z, x, half, z);
-      }
-    }
-    for (let x = -half; x <= half; x += step) {
-      for (let y = -half; y <= half; y += step) {
-        positions.push(x, y, -half, x, y, half);
-      }
-    }
-
     const geometry = new THREE.BufferGeometry();
-
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-
-    const material = new THREE.LineBasicMaterial({
-      color: 0x00ffff,
-      transparent: true,
-      opacity: 0.09,
-      linewidth: 1,
-    });
-
-    this.gridLines = new THREE.LineSegments(geometry, material);
-
-    this.scene.add(this.gridLines);
-
-    this.gridLines.visible = false;
+    return new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.09 }));
   }
 }
