@@ -26,7 +26,7 @@ export declare function daysSinceJ2000(timeMs: number): number;
 export declare function meanAnomalyAt(body: KeplerianElements | null | undefined, timeMs: number): number;
 export declare function trueAnomalyAt(body: KeplerianElements | null | undefined, timeMs: number): number;
 export declare function orbitalRadius(a: number, eccentricity: number, nu: number): number;
-export declare function orbitalPosition(a: number, eccentricity: number, nu: number, inclinationDeg?: number, longitudeOfPerihelionDeg?: number): Vec3;
+export declare function orbitalPosition(a: number, eccentricity: number, nu: number, inclinationDeg?: number, longitudeOfPerihelionDeg?: number, longitudeOfAscendingNodeDeg?: number): Vec3;
 export declare function eclipticLongitude(nu: number, longitudeOfPerihelionDeg?: number): number;
 export declare function clampDateMs(ms: number): number;
 export declare function computeTrueAnomalies(star: unknown, timeMs: number, defaultRingPeriodDays?: number): Record<string, number>;

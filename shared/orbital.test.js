@@ -163,6 +163,39 @@ describe('orbitalRadius / orbitalPosition', () => {
     expect(p.z).toBeCloseTo(5, 12);
     expect(eclipticLongitude(0, 90)).toBeCloseTo(Math.PI / 2, 12);
   });
+
+  it('turns the orbital plane about the line of nodes at Ω', () => {
+    // Polar orbit whose ascending node (and perihelion) lie at ecliptic longitude 90°.
+    const atNode = orbitalPosition(10, 0, 0, 90, 90, 90);
+    expect(atNode.x).toBeCloseTo(0, 12);
+    expect(atNode.z).toBeCloseTo(10, 12); // scene Z = ecliptic longitude 90°
+    const quarter = orbitalPosition(10, 0, Math.PI / 2, 90, 90, 90);
+    expect(quarter.y).toBeCloseTo(-10, 12); // heading to ecliptic north (−Y)
+    // Ω = 0 reproduces the old two-angle form.
+    expect(orbitalPosition(3, 0.2, 1, 5, 40, 0)).toEqual(orbitalPosition(3, 0.2, 1, 5, 40));
+  });
+});
+
+describe('oppositions reproduced by the bundled planet elements', () => {
+  const helioLongitude = (body, iso) => {
+    const nu = trueAnomalyAt(body, Date.parse(iso));
+    const p = orbitalPosition(body.au, body.eccentricity, nu, body.inclination, body.longitudeOfPerihelion, body.longitudeOfAscendingNode);
+    return Math.atan2(p.z, p.x);
+  };
+  const earth = readJson('../resources/planets/earth.json');
+  // At opposition the planet and Earth share the same heliocentric longitude.
+  it.each([
+    ['mars', '2025-01-16T02:32:00Z'],
+    ['jupiter', '2026-01-10T08:00:00Z'],
+    ['saturn', '2025-09-21T05:00:00Z'],
+    ['uranus', '2025-11-21T12:00:00Z'],
+    ['neptune', '2025-09-23T12:00:00Z'],
+  ])('%s opposition on %s', (name, iso) => {
+    const planet = readJson(`../resources/planets/${name}.json`);
+    let diff = Math.abs(helioLongitude(planet, iso) - helioLongitude(earth, iso)) * 180 / Math.PI;
+    if (diff > 180) diff = 360 - diff;
+    expect(diff).toBeLessThan(1);
+  });
 });
 
 describe('ephemeris accuracy of the bundled resource data', () => {

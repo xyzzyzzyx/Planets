@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Galactic orbit**: the entire solar system revolves around the black hole at the centre of the spiral galaxy. A black hole with an accretion disk and photon ring marks the galactic core. The galactic plane is tilted 60.19° to the ecliptic with its centre toward Sagittarius, and the Sun moves toward Cygnus at its true 247 km/s while bobbing through the disk. The galaxy is compressed ~50 million× in both size and time, so the motion past the planets is at true scale.
+- **Tracer** (〰️ button, `T`): fading trails behind the star, planets and comets as they move through space — helices around the star's galactic path. Moon trails follow the 🌙 Moons toggle.
+- **Accuracy pass** (see README → Accuracy and scale):
+  - Planet elements replaced with the JPL table (Mercury's period was 88 instead of 87.969 days, so it drifted ~14° by 2026; Saturn's eccentricity was 0.0565 instead of 0.0539, among others). The orbital model now includes the **longitude of the ascending node**, without which every orbital plane was turned the wrong way.
+  - Body orientation from **IAU rotational elements**: real pole directions and prime meridians tied to the clock (spin used to be a fixed angle per rendered frame, independent of simulation speed). Textures were upside down relative to ecliptic north; clouds and magnetic fields now follow the pole.
+  - **Moons rebuilt from JPL/NSSDC data**: many irregular moons had negative or shifted values, so they sat still (negative periods) or had the wrong orbits. Moon orbits now lie in the correct reference plane: Uranus's moons circle in its 98°-tilted equator, and Triton is retrograde. Removed 15 fabricated duplicate moons from Saturn ("Hati-2" etc.) and two duplicates, and moved Aitne to Jupiter, where it belongs. The Moon has nodal (18.6 yr) and apsidal precession. Moon distances use the same 40× enlargement as body sizes (they used 30×).
+  - **Rings** at their real radii (Saturn's were 2–3× too wide; Uranus's and Neptune's sat at 3–5 planet radii), split into Saturn's C/B/A rings, orbiting at the Keplerian rate for the planet's mass.
+  - **Belts** now lie in the ecliptic (they followed the Sun's 7.25°-tilted equator) and orbit prograde (they turned backwards).
+- Fixed: star belts (asteroid and Kuiper belts) had effectively stopped moving. Their rotation was limited to 500 simulated ms per frame (meant for planetary-ring spin), while 1× advances a simulated day per second. Belts now take their Keplerian angle from the simulation clock.
+
 ## 2.0.0 — 2026-10-23
 
 ### Review & cleanup

@@ -12,13 +12,14 @@
   "x": 579,
   "y": 0,
   "z": 0,
-  "au": 0.387,
+  "au": 0.38709927,
   "color": "#b0b0b0",
-  "period": 88,
+  "period": 87.9693,
   "tilt": 0.034,
   "spin": 0.0008,
-  "eccentricity": 0.2056,
-  "inclination": 7.005,
-  "longitudeOfPerihelion": 77.457796,
-  "M0": 3.050705
+  "eccentricity": 0.20563593,
+  "inclination": 7.00497902,
+  "longitudeOfPerihelion": 77.45779628,
+  "longitudeOfAscendingNode": 48.33076593,
+  "M0": 3.050705108
 }

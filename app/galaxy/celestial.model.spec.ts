@@ -30,10 +30,12 @@ describe('helpers', () => {
 });
 
 describe('CelestialBody', () => {
-  it('derives axis from tilt and defaults spin', () => {
+  it('derives the pole from tilt (ecliptic north is −Y) and defaults spin', () => {
+    expect(planet().pole.toArray()).toEqual([0, -1, 0]);
     const p = planet({ tilt: 90 });
-    expect(p.axis.x).toBeCloseTo(0);
-    expect(p.axis.y).toBeCloseTo(1);
+    expect(p.pole.y).toBeCloseTo(0);
+    expect(Math.abs(p.pole.z)).toBeCloseTo(1);
+    expect(planet({ tilt: 30, spin: -0.1 }).spinPole.dot(planet({ tilt: 30 }).pole)).toBeCloseTo(-1); // retrograde
     expect(planet().spin).toBe(0.01);
     expect(planet({ spin: 0.5 }).spin).toBe(0.5);
   });
@@ -56,7 +58,7 @@ describe('CelestialBody', () => {
     p.mesh = new THREE.Mesh();
     p.ringGroup = new THREE.Group();
     p.rotate();
-    expect(p.mesh.rotation.y).toBeCloseTo(-0.1);
+    expect(p.mesh.rotation.y).toBeCloseTo(0.1); // positive about the (north) pole = prograde
     expect(p.ringGroup.rotation.y).toBe(0);
   });
 
@@ -66,7 +68,7 @@ describe('CelestialBody', () => {
     p.applyInitialTilt();
     p.ringGroup = new THREE.Group();
     const ring = new THREE.Mesh();
-    ring.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), p.axis);
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p.pole);
     p.ringGroup.add(ring);
     const normal = () => new THREE.Vector3(0, 1, 0).applyQuaternion(ring.getWorldQuaternion(new THREE.Quaternion()));
     const spinAxis = () => new THREE.Vector3(0, 1, 0).applyQuaternion(p.mesh.quaternion);
@@ -76,12 +78,12 @@ describe('CelestialBody', () => {
     expect(normal().angleTo(spinAxis())).toBeCloseTo(0, 6); // ring stays equatorial
   });
 
-  it('applyInitialTilt maps +X onto the tilted axis', () => {
+  it('applyInitialTilt puts the mesh north pole (+Y, the texture top) on the pole', () => {
     const p = planet({ tilt: 30 });
     p.mesh = new THREE.Mesh();
     p.applyInitialTilt();
-    const x = new THREE.Vector3(1, 0, 0).applyQuaternion(p.mesh.quaternion);
-    expect(x.distanceTo(p.axis)).toBeLessThan(1e-9);
+    const y = new THREE.Vector3(0, 1, 0).applyQuaternion(p.mesh.quaternion);
+    expect(y.distanceTo(p.pole)).toBeLessThan(1e-9);
   });
 
   it('iterates descendants depth-first and finds bodies by name', () => {

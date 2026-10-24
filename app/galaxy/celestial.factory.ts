@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CelestialBody, CelestialConfig } from './celestial.model';
+import { poleOrientation } from './rotation';
 
 /** Shared helpers for body factories. */
 export abstract class CelestialFactory<T extends CelestialConfig, U extends CelestialBody> {
@@ -49,7 +50,8 @@ export abstract class CelestialFactory<T extends CelestialConfig, U extends Cele
     const cfg = field.magneticConfig;
     const group = new THREE.Group();
     group.name = `${body.name}_magneticField`;
-    group.rotation.z = ((cfg.tilt ?? 0) * Math.PI) / 180;
+    // Dipole axis: the body's spin axis, tilted by the field's own tilt.
+    poleOrientation(body.pole, group.quaternion).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ((cfg.tilt ?? 0) * Math.PI) / 180));
 
     const color = (cfg.polarity ?? 1) >= 0 ? 0x66aaff : 0xff8866;
     const sphere = new THREE.Mesh(

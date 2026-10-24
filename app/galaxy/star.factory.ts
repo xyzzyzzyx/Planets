@@ -1,11 +1,13 @@
 import { Injectable, inject } from '@angular/core';
 import * as THREE from 'three';
+import { J2000_MS } from '../../shared/orbital';
 import { AssetTextureService, hasImage } from '../webgl/asset-texture.service';
 import { CelestialFactory } from './celestial.factory';
 import { CelestialBody, CometConfig, MoonConfig, PlanetConfig, RingConfig, SIMULATION_CONSTANTS, StarConfig, visualRadiusFor } from './celestial.model';
 import { CometFactory } from './comet.factory';
 import { MoonFactory } from './moon.factory';
 import { PlanetFactory } from './planet.factory';
+import { ECLIPTIC_NORTH, poleOrientation } from './rotation';
 import { Star } from './star.model';
 
 export const STAR_MIN_VISUAL_RADIUS = 10;
@@ -16,6 +18,10 @@ export interface RingUserData {
   angularSpeedRadPerMs: number;
   ringName: string;
   ownerName: string;
+  /** Belt orbiting the star at its Keplerian rate; its angle is set from the simulation clock. */
+  keplerian: boolean;
+  /** Orientation before any rotation about the ring normal (used by Keplerian belts). */
+  baseQuaternion: THREE.Quaternion;
 }
 
 export type RingMesh = (THREE.InstancedMesh | THREE.Mesh) & { userData: Partial<RingUserData> };
@@ -27,7 +33,8 @@ interface ParticleRingOptions {
   outer: number;
   count: number;
   tiltDeg: number;
-  axis: THREE.Vector3;
+  /** Ring-plane normal; positive rotation about it is prograde. */
+  pole: THREE.Vector3;
   thickness: number;
   color: string;
   textureUrl?: string;
@@ -39,9 +46,19 @@ interface ParticleRingOptions {
   ownerName: string;
 }
 
-/** Quaternion that maps the ring plane's reference axis (+X, see CelestialBody.axis) onto `axis`. */
-function ringOrientation(axis: THREE.Vector3): THREE.Quaternion {
-  return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), axis.clone().normalize());
+/** Quaternion that lays a ring built in the XZ plane (normal +Y) into the plane whose normal is `pole`. */
+function ringOrientation(pole: THREE.Vector3): THREE.Quaternion {
+  return poleOrientation(pole);
+}
+
+/** Real kilometres per scene unit for bodies and their satellite systems (drawn 40× enlarged; 1 unit = 100,000 km at true scale). */
+export const KM_PER_VISUAL_UNIT = 2500;
+const G = 6.674e-11;
+
+/** Keplerian rate (rad per simulated ms) of ring material at `radius` scene units around a planet of `massKg`. */
+export function planetaryRingAngularSpeed(massKg: number, radius: number): number {
+  const rMeters = radius * KM_PER_VISUAL_UNIT * 1000;
+  return massKg > 0 && rMeters > 0 ? Math.sqrt((G * massKg) / rMeters ** 3) / 1000 : 0;
 }
 
 /** Rotation rate of a Keplerian belt at the given mean radius (scene units), rad per simulated ms. */
@@ -49,6 +66,17 @@ export function keplerianAngularSpeed(meanRadius: number): number {
   const au = meanRadius / SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
   const periodMs = Math.sqrt(au ** 3) * 365.25 * 86_400_000;
   return periodMs > 0 ? (2 * Math.PI) / periodMs : 0;
+}
+
+/**
+ * Rotation (radians, [0, 2π)) of a Keplerian belt at a simulated time. Absolute
+ * rather than incremental, so belts keep pace with the planets at any speed and
+ * land in the right place after a date jump.
+ */
+export function keplerianRingAngle(angularSpeedRadPerMs: number, timeMs: number): number {
+  if (!Number.isFinite(angularSpeedRadPerMs) || !Number.isFinite(timeMs)) return 0;
+  const turns = (angularSpeedRadPerMs * (timeMs - J2000_MS)) / (2 * Math.PI);
+  return (turns - Math.floor(turns)) * 2 * Math.PI;
 }
 
 /**
@@ -171,7 +199,7 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
             outer: inner + (z + 1) * width,
             count: zoneCount,
             tiltDeg: ring.tilt ?? 0,
-            axis: star.axis,
+            pole: ECLIPTIC_NORTH, // belts lie in the planets' plane (not the Sun's 7.25°-tilted equator)
             thickness: ring.thickness ?? 0.4,
             color: ring.color ?? '#b0a090',
             textureUrl: ring.texture,
@@ -183,7 +211,7 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
           });
         }
       } else {
-        const mesh = this.buildWasher(inner, outer, star.axis, ring.color ?? '#b0a090', ring.texture);
+        const mesh = this.buildWasher(inner, outer, ECLIPTIC_NORTH, ring.color ?? '#b0a090', ring.texture);
         mesh.name = `ring_${ring.name}_washer`;
         mesh.userData = { ...mesh.userData, ringName: ring.name, ownerName: star.name };
         star.ringGroup.add(mesh);
@@ -209,18 +237,28 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
     for (const ring of rings) {
       if (!ring?.name) continue;
       const [inner, outer] = safePlanetRingRadii(ring.inner, ring.outer, visualDiameter);
-      const angularSpeed = (ring.rotationSpeed ?? 0.005) / 1000;
-      // Rings lie in the planet's equatorial plane, so orient them by the
-      // planet's own axis (previously the star's axis was used by mistake).
+      // Ring material orbits at the Keplerian rate for the planet's mass (in the
+      // direction the planet spins); without a mass, fall back to the authored visual spin.
+      const keplerian = planet.mass > 1e20; // a real planetary mass (kg)
+      const angularSpeed = keplerian ? planetaryRingAngularSpeed(planet.mass, (inner + outer) / 2) : (ring.rotationSpeed ?? 0.005) / 1000;
+      // Rings lie in the planet's equatorial plane.
       if ((ring.particleCount ?? 0) > 0) {
-        await this.buildParticleRing({
-          inner, outer, count: ring.particleCount!, tiltDeg: ring.tilt ?? 0, axis: planet.axis,
-          thickness: ring.thickness ?? 0.02, color: ring.color ?? '#e8d8b0', textureUrl: ring.texture,
-          keplerian: false, parent: planet.ringGroup, angularSpeedRadPerMs: angularSpeed, particleSize: ring.particleSize,
-          name: `ring_${ring.name}`, ownerName: planet.name,
-        });
+        const zones = keplerian ? 3 : 1;
+        const width = (outer - inner) / zones;
+        for (let z = 0; z < zones; z++) {
+          const zi = inner + z * width;
+          const zo = zi + width;
+          await this.buildParticleRing({
+            inner: zi, outer: zo, count: Math.ceil(ring.particleCount! / zones), tiltDeg: ring.tilt ?? 0, pole: planet.spinPole,
+            thickness: ring.thickness ?? 0.02, color: ring.color ?? '#e8d8b0', textureUrl: ring.texture,
+            keplerian, parent: planet.ringGroup,
+            angularSpeedRadPerMs: keplerian ? planetaryRingAngularSpeed(planet.mass, (zi + zo) / 2) : angularSpeed,
+            particleSize: ring.particleSize,
+            name: zones > 1 ? `ring_${ring.name}_zone${z + 1}` : `ring_${ring.name}`, ownerName: planet.name,
+          });
+        }
       } else {
-        const washer = this.buildWasher(inner, outer, planet.axis, ring.color ?? '#e8d8b0', ring.texture, angularSpeed);
+        const washer = this.buildWasher(inner, outer, planet.spinPole, ring.color ?? '#e8d8b0', ring.texture, angularSpeed);
         washer.name = `ring_${ring.name}_washer`;
         washer.userData = { ...washer.userData, ringName: ring.name, ownerName: planet.name };
         planet.ringGroup.add(washer);
@@ -305,7 +343,7 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
 
     const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(particleRadius, 5, 5), material, count);
     mesh.name = o.name;
-    mesh.quaternion.copy(ringOrientation(o.axis));
+    mesh.quaternion.copy(ringOrientation(o.pole));
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     mesh.frustumCulled = false;
@@ -327,8 +365,11 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
     }
     mesh.instanceMatrix.needsUpdate = true;
 
-    const speed = o.keplerian ? keplerianAngularSpeed((o.inner + o.outer) / 2) : (o.angularSpeedRadPerMs ?? 0);
-    mesh.userData = { rotate: speed > 0, angularSpeedRadPerMs: speed, ringName: o.name.replace(/^ring_/, ''), ownerName: o.ownerName };
+    const speed = o.angularSpeedRadPerMs ?? (o.keplerian ? keplerianAngularSpeed((o.inner + o.outer) / 2) : 0);
+    mesh.userData = {
+      rotate: speed > 0, angularSpeedRadPerMs: speed, ringName: o.name.replace(/^ring_/, ''), ownerName: o.ownerName,
+      ...(o.keplerian ? { keplerian: true, baseQuaternion: mesh.quaternion.clone() } : {}),
+    };
     const ringMesh = mesh as RingMesh;
     this._animatedRings.add(ringMesh); // always tracked so shader time uniforms advance
 
@@ -336,7 +377,7 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
     return ringMesh;
   }
 
-  private buildWasher(inner: number, outer: number, axis: THREE.Vector3, color: string, texture?: string, angularSpeedRadPerMs?: number): RingMesh {
+  private buildWasher(inner: number, outer: number, pole: THREE.Vector3, color: string, texture?: string, angularSpeedRadPerMs?: number): RingMesh {
     const safeInner = Math.max(0.1, inner);
     const safeOuter = Math.max(safeInner + 0.1, outer);
 
@@ -360,7 +401,7 @@ export class StarFactory extends CelestialFactory<StarConfig, Star> {
     }
 
     const mesh = new THREE.Mesh(geom, mat) as RingMesh;
-    mesh.quaternion.copy(ringOrientation(axis));
+    mesh.quaternion.copy(ringOrientation(pole));
     mesh.renderOrder = 5;
     if (angularSpeedRadPerMs && angularSpeedRadPerMs > 0) {
       mesh.userData = { rotate: true, angularSpeedRadPerMs };

@@ -107,17 +107,34 @@ describe('body factories', () => {
       const saturnRing = saturn.ringGroup!.children[0] as RingMesh;
       expect(saturnRing.userData.ownerName).toBe('Saturn');
       expect(saturnRing.userData.angularSpeedRadPerMs).toBeCloseTo(0.02 / 1000);
-      // Rings are oriented by the planet's own axis (26.73°), not the star's (7.25°).
-      const normalAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(saturnRing.quaternion);
-      expect(normalAxis.distanceTo(saturn.axis)).toBeLessThan(1e-9);
-      expect(normalAxis.distanceTo(star.axis)).toBeGreaterThan(0.1);
+      // Rings lie in the planet's own equator (IAU pole), not the star's.
+      const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(saturnRing.quaternion);
+      expect(normal.distanceTo(saturn.spinPole)).toBeLessThan(1e-9);
+      expect(normal.distanceTo(star.pole)).toBeGreaterThan(0.1);
 
       const belt = star.ringGroup!.children[0] as RingMesh;
       expect(belt.userData.angularSpeedRadPerMs).toBeGreaterThan(0);
+      // Belts lie in the ecliptic (normal = ecliptic north, −Y), not the Sun's tilted equator.
+      expect(new THREE.Vector3(0, 1, 0).applyQuaternion(belt.quaternion).y).toBeCloseTo(-1, 9);
       expect((belt.material as THREE.ShaderMaterial).vertexShader).not.toMatch(/attribute vec2 uv/);
 
       factory.clearRings();
       expect(factory.keplerianRings.size).toBe(0);
+    });
+
+    it('spins rings of a massive planet at the Keplerian rate, inner zones faster, in the sense of the planet\'s rotation', async () => {
+      const star = await factory.build(cfg<StarConfig>(SUN));
+      await factory.attachSatellites(star, [cfg<SatelliteConfig>({ ...SATURN, mass: 568, pow: 24 })]);
+      await factory.attachRings(star, []);
+      const saturn = star.satellites[0] as Planet;
+      const zones = saturn.ringGroup!.children as RingMesh[];
+      expect(zones.map((z) => z.name)).toEqual(['ring_SaturnMain_zone1', 'ring_SaturnMain_zone2', 'ring_SaturnMain_zone3']);
+      const speeds = zones.map((z) => z.userData.angularSpeedRadPerMs!);
+      expect(speeds[0]).toBeGreaterThan(speeds[2]);
+      // Kepler: n = sqrt(GM / r³) at the zone's true radius (2,500 km per scene unit).
+      const r = ((72.3 + (120.5 - 72.3) / 6) * 2500) * 1000;
+      expect(speeds[0]).toBeCloseTo(Math.sqrt((6.674e-11 * 568e24) / r ** 3) / 1000, 12);
+      expect(zones[0].userData.keplerian).toBe(true);
     });
 
     it('builds washer rings flat in the equatorial plane when particleCount is 0', async () => {

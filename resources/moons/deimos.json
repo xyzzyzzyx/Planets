@@ -10,10 +10,22 @@
   "mass": 1.48,
   "pow": 15,
   "color": "#7a6f5d",
-  "period": 1.263,
   "tilt": 0,
   "spin": 1.263,
-  "eccentricity": 0.0002,
-  "inclination": 1.793,
-  "semiMajorAxis": 0.234
+  "semiMajorAxis": 0.23457,
+  "eccentricity": 0.0,
+  "argumentOfPeriapsis": 0.0,
+  "M0": 3.577925,
+  "inclination": 1.8,
+  "longitudeOfAscendingNode": 54.3,
+  "period": 1.2624224,
+  "apsidalPeriod": 0.0,
+  "nodalPeriod": 56.2,
+  "referencePlane": "laplace",
+  "laplacePole": {
+    "ra": 316.6,
+    "dec": 53.5
+  },
+  "elementsSource": "JPL SSD mean elements (Laplace plane, J2000)",
+  "siderealPeriod": 1.2625
 }

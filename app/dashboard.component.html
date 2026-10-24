@@ -131,6 +131,10 @@
     <button type="button" [class.active]="webGl.showPlanetOrbits" (click)="webGl.toggleShowPlanetOrbits()">🌍 Planets</button>
     <button type="button" [class.active]="webGl.showMoonOrbits" (click)="webGl.toggleShowMoonOrbits()">🌙 Moons</button>
     <button type="button" [class.active]="webGl.showCometOrbits" (click)="webGl.toggleShowCometOrbits()">☄️ Comets</button>
+    <button type="button" [class.active]="webGl.showTracers" (click)="webGl.toggleTracers()"
+      title="Tracer — trails behind every body as the system revolves around the galactic core (T)">
+      〰️ Tracer <span class="status-badge" [class.on]="webGl.showTracers">{{ webGl.showTracers ? 'ON' : 'OFF' }}</span>
+    </button>
     <button type="button" [class.active]="webGl.graphMode" (click)="webGl.toggleGraphMode()">
       🔲 Graph <span class="status-badge" [class.on]="webGl.graphMode">{{ webGl.graphMode ? 'ON' : 'OFF' }}</span>
     </button>

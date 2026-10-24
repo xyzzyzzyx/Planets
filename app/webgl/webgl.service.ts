@@ -4,11 +4,13 @@ import * as THREE from 'three';
 
 import { MAX_ECCENTRICITY, trueAnomalyAt, trueAnomalyFromEccentric } from '../../shared/orbital';
 import { CelestialBody, OrbitingBody, RingConfig, SIMULATION_CONSTANTS, StarConfig } from '../galaxy/celestial.model';
+import { BlackHole } from '../galaxy/black-hole';
 import { Comet } from '../galaxy/comet.model';
-import { GalaxyFactory } from '../galaxy/galaxy.factory';
+import { GALAXY_ORIENTATION, GalacticOrbit } from '../galaxy/galactic-orbit';
+import { GALAXY_SCALE, GalaxyFactory } from '../galaxy/galaxy.factory';
 import { Galaxy } from '../galaxy/galaxy.model';
 import { Moon } from '../galaxy/moon.model';
-import { SatelliteConfig, StarFactory } from '../galaxy/star.factory';
+import { SatelliteConfig, StarFactory, keplerianRingAngle } from '../galaxy/star.factory';
 import { Star } from '../galaxy/star.model';
 import { BodyData, PlanetsSnapshot, ServerMessage, TransitionReason } from '../utils/protocol';
 import { SseService } from '../utils/sse.service';
@@ -18,6 +20,7 @@ import { removeAndDispose } from './dispose';
 import { HeliocentricControls } from './heliocentric.controls';
 import { Grid } from './tools/grid';
 import { Spectrometer } from './tools/spectrometer';
+import { Tracer } from './tools/tracer';
 import {
   BodySnapshot,
   CameraInfo,
@@ -43,6 +46,7 @@ export const STORAGE_KEYS = {
   graphMode: 'helio_graphMode',
   spectroscopyMode: 'helio_spectroscopyMode',
   verifyMode: 'helio_verifyMode',
+  tracers: 'helio_tracers',
 } as const;
 
 /** The `+` key doubles the speed up to this value (the slider goes much higher). */
@@ -124,6 +128,15 @@ export class WebGl implements ICelestialRenderer {
   renderer: THREE.WebGLRenderer | undefined;
   galaxy: Galaxy | null = null;
   star: Star | null = null;
+  /**
+   * Frame anchored at the galactic core (the black hole at the centre of the
+   * spiral). The active star stays at the scene origin so cameras, the minimap
+   * and orbit lines remain star-relative; its revolution around the core is
+   * shown by moving this frame (and the galaxy backdrop) the opposite way.
+   */
+  readonly galacticFrame = new THREE.Group();
+  readonly galacticOrbit = new GalacticOrbit();
+  blackHole: BlackHole | null = null;
   selectable: THREE.Object3D[] = [];
   active = false;
 
@@ -164,6 +177,7 @@ export class WebGl implements ICelestialRenderer {
   graphMode = readBool(STORAGE_KEYS.graphMode);
   spectroscopyMode = readBool(STORAGE_KEYS.spectroscopyMode);
   verifyMode = readBool(STORAGE_KEYS.verifyMode);
+  showTracers = readBool(STORAGE_KEYS.tracers);
   readonly verificationErrors = new Map<string, number>();
 
   navMode: NavigationMode;
@@ -172,6 +186,8 @@ export class WebGl implements ICelestialRenderer {
 
   private grid: Grid | null = null;
   private spectrometer: Spectrometer | null = null;
+  private tracer: Tracer | null = null;
+  private readonly starGalacticPos = new THREE.Vector3();
   private navPathLine: THREE.Line | null = null;
   private readonly navRouteFromPos = new THREE.Vector3();
   private readonly navRouteTravelSpeed = 2000;
@@ -252,6 +268,16 @@ export class WebGl implements ICelestialRenderer {
     this.spectrometer = new Spectrometer(this.scene);
     this.grid.setVisible(this.graphMode);
     this.spectrometer.setVisible(this.spectroscopyMode);
+
+    this.galacticFrame.name = 'galacticFrame';
+    this.scene.add(this.galacticFrame);
+    this.tracer = new Tracer(
+      this.galacticFrame,
+      (t, target) => this.galacticOrbit.starPositionAt(t, target),
+      () => this.galacticOrbit.periodMs,
+    );
+    this.tracer.setVisible(this.showTracers);
+    this.tracer.setIncludeMoons(this.showMoonOrbits);
   }
 
   start(): void {
@@ -272,6 +298,11 @@ export class WebGl implements ICelestialRenderer {
     this.clearSolarSystem();
     if (this.galaxy) removeAndDispose(this.galaxy.points);
     this.galaxy = null;
+    this.blackHole?.dispose();
+    this.blackHole = null;
+    this.tracer?.dispose();
+    this.tracer = null;
+    this.galacticFrame.removeFromParent();
     this.grid?.dispose();
     this.spectrometer?.dispose();
     removeAndDispose(this.navPathLine);
@@ -529,6 +560,7 @@ export class WebGl implements ICelestialRenderer {
     this.showMoonOrbits = !this.showMoonOrbits;
     writeValue(STORAGE_KEYS.moonOrbits, String(this.showMoonOrbits));
     for (const line of this.moonOrbitLines.values()) line.visible = this.showMoonOrbits;
+    this.tracer?.setIncludeMoons(this.showMoonOrbits); // moon trails follow the Moons toggle
   }
 
   toggleGraphMode(): void {
@@ -553,6 +585,24 @@ export class WebGl implements ICelestialRenderer {
     this.showMagneticFields = !this.showMagneticFields;
     writeValue(STORAGE_KEYS.magneticFields, String(this.showMagneticFields));
     this.applyBodyOverlays();
+  }
+
+  /** Tracer: fading trails behind every body as it travels around the galactic core. */
+  toggleTracers(): void {
+    this.showTracers = !this.showTracers;
+    writeValue(STORAGE_KEYS.tracers, String(this.showTracers));
+    this.tracer?.setVisible(this.showTracers);
+    if (this.showTracers) this.tracer?.update(this.simulationTime);
+  }
+
+  /** The active tracer (null before init). */
+  get tracers(): Tracer | null {
+    return this.tracer;
+  }
+
+  /** World position of the galactic core / black hole. */
+  getGalacticCorePosition(target = new THREE.Vector3()): THREE.Vector3 {
+    return target.copy(this.galacticFrame.position);
   }
 
   toggleVerifyMode(): void {
@@ -858,6 +908,11 @@ export class WebGl implements ICelestialRenderer {
         event.preventDefault();
         this._controls?.adjustMovementSpeed(0.1);
         return;
+      case 'KeyT':
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        event.preventDefault();
+        this.toggleTracers();
+        return;
       case 'Tab':
         event.preventDefault();
         if (event.ctrlKey && event.altKey) this.selectNextRing();
@@ -971,7 +1026,7 @@ export class WebGl implements ICelestialRenderer {
     this._controls?.setStar(star);
     this.scene.add(star.group);
     this.placeBodiesAt(this.simulationTime); // don't leave every body at the origin until the first orbitUpdate
-    star.updateHierarchy(0);
+    star.updateHierarchy(this.simulationTime);
 
     this.loadingStage.set('Drawing orbital paths…');
     for (const body of star.satellites) this.buildOrbitLines(body, star.group, false);
@@ -985,10 +1040,16 @@ export class WebGl implements ICelestialRenderer {
       this.galaxy = this.galaxyFactory.build({ starsCount: 300_000, arms: 4 });
       this.scene.add(this.galaxy.points);
     }
-    // Keep the active star at the origin and shift the backdrop instead, so
-    // camera presets, the minimap and orbit lines stay star-relative.
-    const gp = starData.galaxyPosition;
-    this.galaxy.points.position.set(-(gp?.x ?? 0), -(gp?.y ?? 0), -(gp?.z ?? 0));
+    if (!this.blackHole) {
+      this.blackHole = new BlackHole();
+      this.blackHole.group.quaternion.copy(GALAXY_ORIENTATION); // accretion disk in the galactic plane
+      this.galacticFrame.add(this.blackHole.group);
+    }
+    // The star orbits the black hole at the spiral's centre, starting from its
+    // place in the galaxy (random systems are offset from the home star).
+    this.galacticOrbit.setStart(this.galaxy.config.sunDistance ?? 10, starData.galaxyPosition);
+    this.updateGalacticFrame();
+    this.tracer?.attach(star);
 
     this.applyBodyOverlays();
     this.lastSimTime = undefined;
@@ -1027,7 +1088,27 @@ export class WebGl implements ICelestialRenderer {
       line.visible = this.showPlanetOrbits;
     }
     parent.add(line);
-    for (const sat of body.satellites) this.buildOrbitLines(sat, body.orbitalGroup, true);
+    // A moon's group carries its orbit orientation (reference plane, node, inclination), so its line lives there.
+    for (const sat of body.satellites) this.buildOrbitLines(sat, sat.group, true);
+  }
+
+  /**
+   * Place the galactic core (black hole, tracer trails) and the galaxy backdrop
+   * for the current simulation time. Moving them opposite to the star's
+   * position on its galactic orbit is equivalent to the star revolving around
+   * the core with the camera riding along.
+   */
+  updateGalacticFrame(): void {
+    const starPos = this.galacticOrbit.starPositionAt(this.simulationTime, this.starGalacticPos);
+    this.galacticFrame.position.copy(starPos).negate();
+    if (this.galaxy) {
+      // The galaxy model is built in its own frame with the core at (−sunDistance, 0, 0); turn it into the
+      // real orientation (galactic plane 60° to the ecliptic) and put its core at the galactic frame's origin.
+      const points = this.galaxy.points;
+      points.quaternion.copy(GALAXY_ORIENTATION);
+      points.position.set((this.galaxy.config.sunDistance ?? 10) * GALAXY_SCALE, 0, 0).applyQuaternion(GALAXY_ORIENTATION);
+      points.position.add(this.galacticFrame.position);
+    }
   }
 
   /** Remove the current system and free all of its GPU resources. */
@@ -1037,6 +1118,7 @@ export class WebGl implements ICelestialRenderer {
       this.star = null;
     }
     this._controls?.setStar(null);
+    this.tracer?.detach();
     this.starFactory.clearRings();
     this.planetOrbitLines.clear();
     this.moonOrbitLines.clear();
@@ -1112,8 +1194,12 @@ export class WebGl implements ICelestialRenderer {
     const deltaSimMs = Math.max(-MAX_RING_STEP_MS, Math.min(MAX_RING_STEP_MS, this.simulationTime - this.lastSimTime));
     this.lastSimTime = this.simulationTime;
 
+    this.updateGalacticFrame();
+    this.tracer?.update(this.simulationTime);
+    this.blackHole?.update(elapsedMs / 1000, camera);
+
     if (this.star) {
-      this.star.updateHierarchy(elapsedMs);
+      this.star.updateHierarchy(this.simulationTime); // spins, axial orientation and precessing moon orbits follow the clock
       const sunPos = this.star.getWorldPosition();
       for (const body of this.star.satellites) if (body instanceof Comet) body.updateTail(sunPos);
       if (this.spectroscopyMode) this.spectrometer?.update(this.star);
@@ -1131,7 +1217,14 @@ export class WebGl implements ICelestialRenderer {
 
     const shaderTime = performance.now() / 1000;
     for (const ring of this.starFactory.keplerianRings) {
-      if (ring.userData.rotate && ring.userData.angularSpeedRadPerMs) ring.rotateY(ring.userData.angularSpeedRadPerMs * deltaSimMs);
+      const ud = ring.userData;
+      if (ud.keplerian && ud.baseQuaternion && ud.angularSpeedRadPerMs) {
+        // Star belts orbit at their Keplerian rate, set from the clock so they keep moving with the planets at any speed.
+        ring.quaternion.copy(ud.baseQuaternion);
+        ring.rotateY(keplerianRingAngle(ud.angularSpeedRadPerMs, this.simulationTime));
+      } else if (ud.rotate && ud.angularSpeedRadPerMs) {
+        ring.rotateY(ud.angularSpeedRadPerMs * deltaSimMs);
+      }
       const uniforms = (ring.material as THREE.ShaderMaterial).uniforms;
       if (uniforms?.['uTime']) uniforms['uTime'].value = shaderTime;
     }

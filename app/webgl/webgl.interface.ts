@@ -68,6 +68,7 @@ export interface ICelestialRenderer {
   showPlanetOrbits: boolean;
   showMoonOrbits: boolean;
   showCometOrbits: boolean;
+  showTracers: boolean;
 
   graphMode: boolean;
   spectroscopyMode: boolean;
@@ -91,6 +92,7 @@ export interface ICelestialRenderer {
   toggleShowPlanetOrbits(): void;
   toggleShowCometOrbits(): void;
   toggleShowMoonOrbits(): void;
+  toggleTracers(): void;
   toggleShowCoordinateGrids(): void;
   toggleShowMagneticFields(): void;
   toggleGraphMode(): void;

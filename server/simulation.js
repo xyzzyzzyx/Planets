@@ -10,7 +10,7 @@ import { generateRandomStarSystem, randomGalaxyPosition } from './random-system.
 import { listBodies } from './universe.js';
 
 /** Bump when the persisted state shape or resource semantics change; stale caches are rebuilt. */
-export const STATE_SCHEMA_VERSION = 2;
+export const STATE_SCHEMA_VERSION = 3;
 
 /** Simulated milliseconds per real second at speed 1×  (1× = one simulated day per second). */
 export const BASE_RATE = MS_PER_DAY;

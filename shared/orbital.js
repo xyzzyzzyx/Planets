@@ -7,7 +7,10 @@
  * Conventions
  *  - `period` is the sidereal orbital period in **days**.
  *  - `M0` is the mean anomaly at the J2000 epoch, in **radians**.
- *  - `inclination` and `longitudeOfPerihelion` are in **degrees**.
+ *  - `inclination`, `longitudeOfPerihelion` (ϖ = Ω + ω) and
+ *    `longitudeOfAscendingNode` (Ω) are in **degrees**, J2000 ecliptic/equinox.
+ *  - Scene frame: X = vernal equinox, Z = ecliptic longitude 90°, and
+ *    **−Y = ecliptic north** (prograde orbits run X → Z, clockwise seen from +Y).
  *  - All returned angles are normalised to [0, 2π).
  */
 
@@ -108,17 +111,22 @@ export function orbitalRadius(a, eccentricity, nu) {
 }
 
 /**
- * Cartesian position in the scene frame (Y up, ecliptic = XZ plane).
- * The line of nodes lies on the X axis; the perihelion is rotated by
- * `longitudeOfPerihelion` inside the orbital plane.
+ * Cartesian position in the scene frame (ecliptic = XZ plane, −Y = ecliptic
+ * north) from the classical elements: the orbit is inclined by `i` about the
+ * line of nodes at longitude Ω, and the perihelion lies ω = ϖ − Ω past the
+ * ascending node.
  */
-export function orbitalPosition(a, eccentricity, nu, inclinationDeg = 0, longitudeOfPerihelionDeg = 0) {
+export function orbitalPosition(a, eccentricity, nu, inclinationDeg = 0, longitudeOfPerihelionDeg = 0, longitudeOfAscendingNodeDeg = 0) {
   const r = orbitalRadius(a, eccentricity, nu);
-  const u = nu + (longitudeOfPerihelionDeg || 0) * DEG;
+  const node = (longitudeOfAscendingNodeDeg || 0) * DEG;
+  const u = nu + (longitudeOfPerihelionDeg || 0) * DEG - node; // argument of latitude ν + ω
   const inc = (inclinationDeg || 0) * DEG;
-  const x = r * Math.cos(u);
-  const inPlane = r * Math.sin(u);
-  return { x, y: -inPlane * Math.sin(inc), z: inPlane * Math.cos(inc) };
+  const cosU = Math.cos(u), sinU = Math.sin(u);
+  const cosO = Math.cos(node), sinO = Math.sin(node);
+  const xEcl = r * (cosO * cosU - sinO * sinU * Math.cos(inc));
+  const yEcl = r * (sinO * cosU + cosO * sinU * Math.cos(inc));
+  const zEcl = r * sinU * Math.sin(inc);
+  return { x: xEcl, y: -zEcl, z: yEcl };
 }
 
 /** Heliocentric ecliptic longitude (radians, [0, 2π)) for a true anomaly. */

@@ -1,10 +1,12 @@
 import { TestBed } from '@angular/core/testing';
 import * as THREE from 'three';
-import { computeTrueAnomalies } from '../../shared/orbital';
+import { J2000_MS, computeTrueAnomalies } from '../../shared/orbital';
 import { APP_CONFIG } from '../app.config';
 import { CelestialBody, OrbitingBody } from '../galaxy/celestial.model';
 import { Comet } from '../galaxy/comet.model';
-import { GalaxyFactory } from '../galaxy/galaxy.factory';
+import { GALACTIC_AXES, GALACTIC_YEAR_MS, GALAXY_ORIENTATION } from '../galaxy/galactic-orbit';
+import { GALAXY_SCALE, GalaxyFactory } from '../galaxy/galaxy.factory';
+import { keplerianRingAngle } from '../galaxy/star.factory';
 import { Planet } from '../galaxy/planet.model';
 import { FakeEventSource, FakeWebSocket, createRendererStub, fakeTextureLoader, randomSnapshot, snapshot } from '../testing/fakes';
 import { PlanetsSnapshot } from '../utils/protocol';
@@ -207,7 +209,14 @@ describe('WebGl', () => {
       expect(star.satellites.map((s) => s.constructor.name)).toEqual(['Planet', 'Comet']);
       // Star stays at the origin; the galaxy backdrop is shifted instead.
       expect(star.group.position.length()).toBe(0);
-      expect(webGl.galaxy!.points.position.toArray()).toEqual([-10000, -0, 5000]);
+      // At the galactic epoch the backdrop sits at the star's galaxy position (plus the Sun's height above the disk).
+      webGl.simulationTime = J2000_MS;
+      webGl.updateGalacticFrame();
+      const expected = new THREE.Vector3(-10000, 0, 5000).applyQuaternion(GALAXY_ORIENTATION);
+      const p = webGl.galaxy!.points.position.clone();
+      const h = p.dot(GALACTIC_AXES.northPole) - expected.dot(GALACTIC_AXES.northPole);
+      expect(p.addScaledVector(GALACTIC_AXES.northPole, -h).distanceTo(expected)).toBeLessThan(1e-6);
+      expect(Math.abs(h)).toBeLessThan(200);
     });
 
     it('builds the galaxy only once across systems', async () => {
@@ -659,6 +668,91 @@ describe('WebGl', () => {
       const speed = (ring.userData as { angularSpeedRadPerMs: number }).angularSpeedRadPerMs;
       expect(ring.quaternion.angleTo(before)).toBeCloseTo(speed * MAX_RING_STEP_MS, 9);
       expect(((ring as THREE.Mesh).material as THREE.ShaderMaterial).uniforms['uTime'].value).toBeGreaterThan(0);
+    });
+
+    it('keeps Keplerian star belts moving at their orbital rate, even across large time steps', async () => {
+      const star = await loaded(webGl);
+      const zones = star.ringGroup!.children.filter((c) => c.name.startsWith('ring_AsteroidBelt')) as THREE.InstancedMesh[];
+      expect(zones).toHaveLength(3);
+      webGl.renderFrame(0.016);
+      const before = zones.map((z) => z.quaternion.clone());
+      const days = 40;
+      webGl.simulationTime += days * 86_400_000; // far more than MAX_RING_STEP_MS
+      webGl.renderFrame(0.016);
+      zones.forEach((zone, i) => {
+        const speed = (zone.userData as { angularSpeedRadPerMs: number }).angularSpeedRadPerMs;
+        expect(zone.quaternion.angleTo(before[i])).toBeCloseTo(speed * days * 86_400_000, 6);
+      });
+      // Prograde: a particle's motion turns about ecliptic north (−Y), like the planets.
+      const probe = new THREE.Vector3(1000, 0, 0);
+      const p0 = probe.clone().applyQuaternion(before[0]);
+      const p1 = probe.clone().applyQuaternion(zones[0].quaternion);
+      expect(p0.clone().cross(p1).normalize().y).toBeLessThan(-0.99);
+      // Inner zones orbit faster than outer ones.
+      const speeds = zones.map((z) => (z.userData as { angularSpeedRadPerMs: number }).angularSpeedRadPerMs);
+      expect(speeds[0]).toBeGreaterThan(speeds[2]);
+      expect(keplerianRingAngle(speeds[0], webGl.simulationTime)).toBeGreaterThanOrEqual(0);
+    });
+
+    it('revolves the system around the black hole at the centre of the galaxy', async () => {
+      await loaded(webGl);
+      expect(webGl.blackHole?.group.parent).toBe(webGl.galacticFrame);
+      webGl.renderFrame(0.016);
+      const inPlane = (v: THREE.Vector3) => v.clone().addScaledVector(GALACTIC_AXES.northPole, -v.dot(GALACTIC_AXES.northPole));
+      const core0 = webGl.getGalacticCorePosition();
+      const radius = 10 * GALAXY_SCALE;
+      expect(inPlane(core0).length()).toBeCloseTo(radius, 3);
+      // The galaxy backdrop moves and turns with the core (its geometry has the core at (−sunDistance, 0, 0)).
+      const galaxyCore = new THREE.Vector3(-radius, 0, 0).applyQuaternion(webGl.galaxy!.points.quaternion).add(webGl.galaxy!.points.position);
+      expect(galaxyCore.distanceTo(core0)).toBeLessThan(1e-6);
+
+      webGl.simulationTime += GALACTIC_YEAR_MS / 4;
+      webGl.renderFrame(0.016);
+      const core1 = webGl.getGalacticCorePosition();
+      expect(inPlane(core1).length()).toBeCloseTo(radius, 3);
+      expect(inPlane(core1).angleTo(inPlane(core0))).toBeCloseTo(Math.PI / 2, 4);
+      // The star itself stays at the origin.
+      expect(webGl.star!.getWorldPosition().length()).toBe(0);
+    });
+
+    it('starts random systems from their place in the galaxy', async () => {
+      await loaded(webGl, randomSnapshot());
+      const expected = GALACTIC_AXES.center.clone().multiplyScalar(-10 * GALAXY_SCALE)
+        .add(new THREE.Vector3(10000, 0, -5000).applyQuaternion(GALAXY_ORIENTATION));
+      expect(webGl.galacticOrbit.epochOffset.distanceTo(expected)).toBeLessThan(200); // + the Sun's height above the disk
+    });
+
+    it('Tracer toggles (button or T), persists, and draws a trail per body', async () => {
+      await loaded(webGl);
+      localStorage.removeItem(STORAGE_KEYS.tracers);
+      const wasOn = webGl.showTracers;
+      if (wasOn) webGl.toggleTracers();
+      webGl.keyDown(new KeyboardEvent('keydown', { code: 'KeyT' }));
+      expect(webGl.showTracers).toBe(true);
+      expect(localStorage.getItem(STORAGE_KEYS.tracers)).toBe('true');
+      const tracer = webGl.tracers!;
+      expect(tracer.group.parent).toBe(webGl.galacticFrame);
+      expect(tracer.trailCount).toBe([...webGl.star!.descendants()].length);
+      webGl.renderFrame(0.016);
+      expect(tracer.sampleCount('Earth')).toBeGreaterThan(0);
+      expect(tracer.lineFor('Earth')!.geometry.drawRange.count).toBeGreaterThan(1);
+      // Moon trails follow the Moons orbit toggle.
+      if (webGl.showMoonOrbits) webGl.toggleShowMoonOrbits();
+      expect(tracer.includeMoons).toBe(false);
+      webGl.toggleShowMoonOrbits();
+      expect(tracer.includeMoons).toBe(true);
+      webGl.renderFrame(0.016);
+      expect(tracer.sampleCount('Moon')).toBeGreaterThan(0);
+      webGl.toggleShowMoonOrbits();
+
+      webGl.toggleTracers();
+      expect(webGl.showTracers).toBe(false);
+      expect(tracer.visible).toBe(false);
+      webGl.keyDown(new KeyboardEvent('keydown', { code: 'KeyT', ctrlKey: true }));
+      expect(webGl.showTracers).toBe(false);
+
+      webGl.clearSolarSystem();
+      expect(tracer.trailCount).toBe(0);
     });
 
     it('does nothing before init', () => {
