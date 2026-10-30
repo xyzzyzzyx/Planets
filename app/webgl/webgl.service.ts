@@ -59,7 +59,7 @@ const OUTER_SCENE = OUTER_AU * SIMULATION_CONSTANTS.SCALE_UNITS_PER_AU;
 
 export const CAMERA_PRESETS: Readonly<Record<CameraView, { pos: THREE.Vector3; up: THREE.Vector3 }>> = {
   [CameraView.OVERVIEW]: { pos: new THREE.Vector3(0, OUTER_SCENE * 2, OUTER_SCENE * 2), up: new THREE.Vector3(0, 1, 0) },
-  [CameraView.ECLIPTIC]: { pos: new THREE.Vector3(OUTER_SCENE * 2.4, OUTER_SCENE * 0.15, 0), up: new THREE.Vector3(0, 0, 1) },
+  [CameraView.ECLIPTIC]: { pos: new THREE.Vector3(OUTER_SCENE * 2.4, OUTER_SCENE * 0.15, 0), up: new THREE.Vector3(0, 1, 0) },
   [CameraView.CINEMATIC]: { pos: new THREE.Vector3(OUTER_SCENE * 0.8, OUTER_SCENE * 0.6, OUTER_SCENE * 2.0), up: new THREE.Vector3(0, 1, 0) },
 };
 
@@ -368,19 +368,19 @@ export class WebGl implements ICelestialRenderer {
     if (!body || !this.camera || !(body instanceof OrbitingBody)) return 0;
     const bodyPos = body.getWorldPosition();
     const camPos = this.camera.position;
-    let diff = Math.atan2(camPos.z, camPos.x) - Math.atan2(bodyPos.z, bodyPos.x);
+    let diff = Math.atan2(-camPos.z, camPos.x) - Math.atan2(-bodyPos.z, bodyPos.x);
     diff = ((diff % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
     return diff > Math.PI ? diff - 2 * Math.PI : diff;
   }
 
   /**
    * Heading of the camera projected onto the ecliptic, as a clockwise canvas
-   * rotation for the minimap arrow (0 = +Z, which the minimap draws "up").
+   * rotation for the minimap arrow (0 = −Z, which the minimap draws "up").
    */
   getCameraAzimuth(): number {
     if (!this.camera) return 0;
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
-    return Math.atan2(dir.x, dir.z);
+    return Math.atan2(dir.x, -dir.z);
   }
 
   getSelectionHierarchyLabels(): string[] {

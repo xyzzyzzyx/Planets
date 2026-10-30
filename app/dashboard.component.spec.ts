@@ -20,7 +20,7 @@ describe('minimap coordinate helpers', () => {
       expect(w.z).toBeCloseTo(z, 6);
     }
     expect(worldToMinimap(0, 0)).toEqual({ x: MINIMAP_SIZE / 2, y: MINIMAP_SIZE / 2 });
-    expect(worldToMinimap(0, 1000).y).toBeLessThan(MINIMAP_SIZE / 2); // +Z is drawn "up"
+    expect(worldToMinimap(0, -1000).y).toBeLessThan(MINIMAP_SIZE / 2); // −Z (ecliptic λ 90°) is drawn "up"
   });
 });
 
@@ -142,7 +142,7 @@ describe('DashboardComponent', () => {
     minimap.dispatchEvent(new MouseEvent('click', { clientX: MINIMAP_SIZE / 2, clientY: 0, bubbles: true }));
     fixture.detectChanges();
     expect(webGl.navRoute.waypoints.map((w) => w.type)).toEqual(['body', 'coordinate']);
-    expect(webGl.navRoute.waypoints[1].position!.z).toBeGreaterThan(0);
+    expect(webGl.navRoute.waypoints[1].position!.z).toBeLessThan(0); // top of the minimap = −Z
     expect((fixture.nativeElement as HTMLElement).querySelectorAll('.waypoint-item')).toHaveLength(2);
     expect(cmp.isWaypoint('Sun')).toBe(true);
   });

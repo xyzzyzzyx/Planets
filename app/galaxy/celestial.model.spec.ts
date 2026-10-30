@@ -30,8 +30,8 @@ describe('helpers', () => {
 });
 
 describe('CelestialBody', () => {
-  it('derives the pole from tilt (ecliptic north is −Y) and defaults spin', () => {
-    expect(planet().pole.toArray()).toEqual([0, -1, 0]);
+  it('derives the pole from tilt (ecliptic north is +Y) and defaults spin', () => {
+    expect(planet().pole.toArray()).toEqual([0, 1, 0]);
     const p = planet({ tilt: 90 });
     expect(p.pole.y).toBeCloseTo(0);
     expect(Math.abs(p.pole.z)).toBeCloseTo(1);

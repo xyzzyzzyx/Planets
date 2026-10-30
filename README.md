@@ -137,7 +137,7 @@ The active star stays at the scene origin: the camera rides along with the syste
 
 Distances between the Sun and planets are at true scale. **Bodies, rings and moon distances are drawn 40× enlarged** (one scene unit is 100,000 km between planets but 2,500 km within a planet's system), so each planet system is a true-proportion miniature. Without that, every planet would be smaller than a pixel. Spins are exact at every frame; at high simulation speeds they alias (a planet can appear to turn slowly or backwards).
 
-The scene frame is J2000 ecliptic with **ecliptic north at −Y** (`shared/orbital.js`). The default camera views look from the +Y side, i.e. from south of the ecliptic, where orbits run clockwise.
+The scene frame is J2000 ecliptic with **ecliptic north at +Y** and ecliptic longitude 90° at −Z (`shared/orbital.js`). The default camera views look from the +Y side, i.e. from north of the ecliptic, so planets appear north-up and orbits run counter-clockwise.
 
 # Tracer
 

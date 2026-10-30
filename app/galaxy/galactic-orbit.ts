@@ -56,9 +56,9 @@ const ECL_GC: [number, number, number] = [-0.0548755604, -0.993821379, -0.096476
 const ECL_L90: [number, number, number] = [0.4941094279, -0.1109907336, 0.8622858751];
 const ECL_NGP: [number, number, number] = [-0.867666149, -0.00035159, 0.4971471917];
 
-/** Ecliptic (X equinox, Y λ=90°, Z north) → scene (−Y is ecliptic north, see shared/orbital.js). */
+/** Ecliptic (X equinox, Y λ=90°, Z north) → scene (+Y is ecliptic north, −Z is λ 90°; see shared/orbital.js). */
 export function eclipticToScene([x, y, z]: readonly [number, number, number], target = new THREE.Vector3()): THREE.Vector3 {
-  return target.set(x, -z, y);
+  return target.set(x, z, -y);
 }
 
 /** Unit vectors (scene frame) toward the galactic centre, the direction of rotation, and the north galactic pole. */

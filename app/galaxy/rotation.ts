@@ -56,9 +56,9 @@ export const IAU_ROTATION: Readonly<Record<string, RotationElements>> = {
 /** Mean obliquity of the ecliptic at J2000. */
 export const OBLIQUITY_J2000_DEG = 23.4392911;
 
-/** ICRF (equatorial) → J2000 ecliptic → scene (−Y = ecliptic north; see shared/orbital.js). */
+/** ICRF (equatorial) → J2000 ecliptic → scene (+Y = ecliptic north, −Z = λ 90°; see shared/orbital.js). */
 const ICRF_TO_SCENE = new THREE.Matrix4()
-  .makeBasis(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -1, 0)) // ecliptic → scene
+  .makeBasis(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 1, 0)) // ecliptic → scene
   .multiply(new THREE.Matrix4().makeRotationX(-OBLIQUITY_J2000_DEG * DEG)); // equatorial → ecliptic
 
 /**
@@ -96,7 +96,7 @@ export function iauPole(el: RotationElements, timeMs: number = J2000_MS, target 
 }
 
 /** Ecliptic north in the scene frame. */
-export const ECLIPTIC_NORTH = Object.freeze(new THREE.Vector3(0, -1, 0));
+export const ECLIPTIC_NORTH = Object.freeze(new THREE.Vector3(0, 1, 0));
 
 /** Quaternion turning local +Y onto `pole` (orients an equatorial ring or a fallback spin axis). */
 export function poleOrientation(pole: THREE.Vector3, target = new THREE.Quaternion()): THREE.Quaternion {

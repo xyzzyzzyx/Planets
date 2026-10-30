@@ -571,11 +571,11 @@ describe('WebGl', () => {
       expect(snap.camera).toEqual({ x: 1, y: 3, z: 2 });
     });
 
-    it('getCameraAzimuth: 0 when looking along +Z, π/2 along +X', () => {
+    it('getCameraAzimuth: 0 when looking along −Z, π/2 along +X', () => {
       const cam = webGl.camera!;
       cam.position.set(0, 0, 0);
       cam.up.set(0, 1, 0);
-      cam.lookAt(0, 0, 10);
+      cam.lookAt(0, 0, -10);
       expect(webGl.getCameraAzimuth()).toBeCloseTo(0);
       cam.lookAt(10, 0, 0);
       expect(webGl.getCameraAzimuth()).toBeCloseTo(Math.PI / 2);
@@ -683,11 +683,11 @@ describe('WebGl', () => {
         const speed = (zone.userData as { angularSpeedRadPerMs: number }).angularSpeedRadPerMs;
         expect(zone.quaternion.angleTo(before[i])).toBeCloseTo(speed * days * 86_400_000, 6);
       });
-      // Prograde: a particle's motion turns about ecliptic north (−Y), like the planets.
+      // Prograde: a particle's motion turns about ecliptic north (+Y), like the planets.
       const probe = new THREE.Vector3(1000, 0, 0);
       const p0 = probe.clone().applyQuaternion(before[0]);
       const p1 = probe.clone().applyQuaternion(zones[0].quaternion);
-      expect(p0.clone().cross(p1).normalize().y).toBeLessThan(-0.99);
+      expect(p0.clone().cross(p1).normalize().y).toBeGreaterThan(0.99);
       // Inner zones orbit faster than outer ones.
       const speeds = zones.map((z) => (z.userData as { angularSpeedRadPerMs: number }).angularSpeedRadPerMs);
       expect(speeds[0]).toBeGreaterThan(speeds[2]);

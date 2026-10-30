@@ -114,8 +114,8 @@ describe('body factories', () => {
 
       const belt = star.ringGroup!.children[0] as RingMesh;
       expect(belt.userData.angularSpeedRadPerMs).toBeGreaterThan(0);
-      // Belts lie in the ecliptic (normal = ecliptic north, −Y), not the Sun's tilted equator.
-      expect(new THREE.Vector3(0, 1, 0).applyQuaternion(belt.quaternion).y).toBeCloseTo(-1, 9);
+      // Belts lie in the ecliptic (normal = ecliptic north, +Y), not the Sun's tilted equator.
+      expect(new THREE.Vector3(0, 1, 0).applyQuaternion(belt.quaternion).y).toBeCloseTo(1, 9);
       expect((belt.material as THREE.ShaderMaterial).vertexShader).not.toMatch(/attribute vec2 uv/);
 
       factory.clearRings();

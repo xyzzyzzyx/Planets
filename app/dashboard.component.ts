@@ -33,13 +33,13 @@ export const MINIMAP_SCALE = (MINIMAP_SIZE * 0.45) / (MINIMAP_OUTER_AU * SIMULAT
 /** Convert a minimap pixel to ecliptic world coordinates (x, z). */
 export function minimapToWorld(px: number, py: number): { x: number; z: number } {
   const c = MINIMAP_SIZE / 2;
-  return { x: (px - c) / MINIMAP_SCALE, z: -(py - c) / MINIMAP_SCALE };
+  return { x: (px - c) / MINIMAP_SCALE, z: (py - c) / MINIMAP_SCALE };
 }
 
 /** Convert ecliptic world coordinates (x, z) to a minimap pixel. */
 export function worldToMinimap(x: number, z: number): { x: number; y: number } {
   const c = MINIMAP_SIZE / 2;
-  return { x: c + x * MINIMAP_SCALE, y: c - z * MINIMAP_SCALE };
+  return { x: c + x * MINIMAP_SCALE, y: c + z * MINIMAP_SCALE };
 }
 
 const HUD_SELECTOR = '.planet-panel, .sliders-panel, .minimap-wrap, .orbit-controls, .info-panel, .nav-mode-bar, .nav-panel, .date-panel, .help-panel, .selection-bar';

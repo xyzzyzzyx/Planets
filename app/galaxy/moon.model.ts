@@ -35,10 +35,10 @@ const YEAR_MS = 365.25 * 86_400_000;
 const J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 const X_AXIS = new THREE.Vector3(1, 0, 0);
 /**
- * The group's local frame (orbits lie in XZ, run X → Z, angular momentum −Y)
+ * The group's local frame (orbits lie in XZ, run X → −Z, angular momentum +Y)
  * expressed in the orbit-plane frame (periapsis P = x, Q = H × P = y, angular momentum H = z).
  */
-const LOCAL_TO_PLANE = new THREE.Matrix4().makeBasis(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 1, 0));
+const LOCAL_TO_PLANE = new THREE.Matrix4().makeBasis(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -1, 0));
 const _basis = new THREE.Matrix4();
 const _r = new THREE.Matrix4();
 const _x = new THREE.Vector3();
@@ -118,11 +118,11 @@ export class Moon extends OrbitingBody {
       super.updateOrientation(simTime);
       return;
     }
-    // Synchronous rotation: prime meridian (+X) toward the planet, north (+Y) along the orbital angular momentum (−Y locally).
+    // Synchronous rotation: prime meridian (+X) toward the planet, north (+Y) along the orbital angular momentum (+Y locally).
     const p = this.orbitalGroup.position;
     if (p.lengthSq() === 0) return;
     _x.copy(p).negate().normalize();
-    _y.set(0, -1, 0);
+    _y.set(0, 1, 0);
     _z.crossVectors(_x, _y).normalize();
     _y.crossVectors(_z, _x);
     this.mesh.quaternion.setFromRotationMatrix(_basis.makeBasis(_x, _y, _z));
@@ -142,7 +142,7 @@ export class Moon extends OrbitingBody {
     toStar.y = 0;
     toMoon.y = 0;
     if (toStar.lengthSq() === 0 || toMoon.lengthSq() === 0) return LunarPhase.NEW_MOON;
-    const angle = Math.atan2(toStar.x * toMoon.z - toStar.z * toMoon.x, toStar.dot(toMoon));
+    const angle = Math.atan2(toStar.z * toMoon.x - toStar.x * toMoon.z, toStar.dot(toMoon)); // positive = prograde (about +Y)
     return lunarPhaseFromAngle(angle);
   }
 }

@@ -148,19 +148,19 @@ describe('orbitalRadius / orbitalPosition', () => {
     const p = orbitalPosition(10, 0, Math.PI / 2);
     expect(p.x).toBeCloseTo(0, 12);
     expect(p.y).toBeCloseTo(0, 12);
-    expect(p.z).toBeCloseTo(10, 12);
+    expect(p.z).toBeCloseTo(-10, 12);
   });
 
   it('tilts the orbit by its inclination', () => {
     const p = orbitalPosition(10, 0, Math.PI / 2, 90);
-    expect(p.y).toBeCloseTo(-10, 12);
+    expect(p.y).toBeCloseTo(10, 12);
     expect(p.z).toBeCloseTo(0, 12);
   });
 
   it('rotates the perihelion by the longitude of perihelion', () => {
     const p = orbitalPosition(10, 0.5, 0, 0, 90);
     expect(p.x).toBeCloseTo(0, 12);
-    expect(p.z).toBeCloseTo(5, 12);
+    expect(p.z).toBeCloseTo(-5, 12);
     expect(eclipticLongitude(0, 90)).toBeCloseTo(Math.PI / 2, 12);
   });
 
@@ -168,9 +168,9 @@ describe('orbitalRadius / orbitalPosition', () => {
     // Polar orbit whose ascending node (and perihelion) lie at ecliptic longitude 90°.
     const atNode = orbitalPosition(10, 0, 0, 90, 90, 90);
     expect(atNode.x).toBeCloseTo(0, 12);
-    expect(atNode.z).toBeCloseTo(10, 12); // scene Z = ecliptic longitude 90°
+    expect(atNode.z).toBeCloseTo(-10, 12); // scene −Z = ecliptic longitude 90°
     const quarter = orbitalPosition(10, 0, Math.PI / 2, 90, 90, 90);
-    expect(quarter.y).toBeCloseTo(-10, 12); // heading to ecliptic north (−Y)
+    expect(quarter.y).toBeCloseTo(10, 12); // heading to ecliptic north (+Y)
     // Ω = 0 reproduces the old two-angle form.
     expect(orbitalPosition(3, 0.2, 1, 5, 40, 0)).toEqual(orbitalPosition(3, 0.2, 1, 5, 40));
   });

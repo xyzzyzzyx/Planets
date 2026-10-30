@@ -8,10 +8,10 @@ import { GALAXY_SCALE } from './galaxy.factory';
 
 describe('galactic orbit', () => {
   const deg = (rad: number) => (rad * 180) / Math.PI;
-  /** Ecliptic longitude/latitude (degrees) of a scene-frame direction (−Y = ecliptic north). */
+  /** Ecliptic longitude/latitude (degrees) of a scene-frame direction (+Y = ecliptic north, −Z = λ 90°). */
   const eclipticLonLat = (v: THREE.Vector3) => {
     const n = v.clone().normalize();
-    return { lon: (deg(Math.atan2(n.z, n.x)) + 360) % 360, lat: deg(Math.asin(-n.y)) };
+    return { lon: (deg(Math.atan2(-n.z, n.x)) + 360) % 360, lat: deg(Math.asin(n.y)) };
   };
 
   it('galacticAngleAt is 0 at J2000 and wraps once per period', () => {
@@ -30,7 +30,7 @@ describe('galactic orbit', () => {
     const ngp = eclipticLonLat(GALACTIC_AXES.northPole);
     expect(ngp.lon).toBeCloseTo(180.02, 1);
     expect(ngp.lat).toBeCloseTo(29.81, 1);
-    const eclipticNorth = new THREE.Vector3(0, -1, 0);
+    const eclipticNorth = new THREE.Vector3(0, 1, 0);
     expect(deg(GALACTIC_AXES.northPole.angleTo(eclipticNorth))).toBeCloseTo(60.19, 1);
     // The galaxy model's local axes map onto those directions.
     expect(new THREE.Vector3(-1, 0, 0).applyQuaternion(GALAXY_ORIENTATION).distanceTo(GALACTIC_AXES.center)).toBeLessThan(1e-9);
